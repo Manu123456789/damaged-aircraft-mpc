@@ -2,14 +2,14 @@ import numpy as np
 from numpy import sin, cos
 
 class AircraftModel:
-    def __init__(self, pos_north, pos_east, altitude, vel, chi, gamma, dt = 0.05):
+    def __init__(self, pos_north, pos_east, altitude, vel, heading_deg, climb_angle_deg, dt = 0.05):
         # Initial Configuration
-        self.pos_north = pos_north      # North Position (m)
-        self.pos_east = pos_east        # East Position (m)
-        self.altitude = altitude        # Altitude (m)
-        self.vel = vel                  # Airspeed (m/s)
-        self.chi = chi                  # Heading angle(rad)
-        self.gamma = gamma              # Flight path (climb) angle (rad)
+        self.pos_north = pos_north                  # North Position (m)
+        self.pos_east = pos_east                    # East Position (m)
+        self.altitude = altitude                    # Altitude (m)
+        self.vel = vel                              # Airspeed (m/s)
+        self.chi = np.deg2rad(heading_deg)          # Heading angle(rad)
+        self.gamma = np.deg2rad(climb_angle_deg)    # Flight path (climb) angle (rad)
         self.dt = dt
 
         self._update_linearized_kinematics()
