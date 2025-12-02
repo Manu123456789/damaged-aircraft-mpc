@@ -182,7 +182,7 @@ class GlidePathPlanner:
 
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
-    from glide_plots import (
+    from flight_control_mpc.glide_plots import (
         plot_3d_path,
         plot_ground_track,
         plot_altitude,

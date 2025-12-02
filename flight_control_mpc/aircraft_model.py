@@ -13,7 +13,9 @@ class AircraftModel:
         self.gamma = 0.0            # Flight path (climb) angle (rad)
 
     def update_linearized_kinematics(self, dt):
-    
+        """ 
+        Update the dynamics matricies using linearized kinematics model 
+        """
         V = self.vel
         gamma = self.gamma
         chi = self.chi
