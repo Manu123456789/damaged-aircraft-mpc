@@ -182,7 +182,7 @@ class GlidePathPlanner:
 
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
-    from flight_control_mpc.glide_plots import (
+    from glide_plots import (
         plot_3d_path,
         plot_ground_track,
         plot_altitude,
@@ -194,9 +194,6 @@ if __name__ == "__main__":
 
     planner = GlidePathPlanner(N, runway_heading_deg)
     waypoints = planner.solve_QP(start_pos)
-
-    print("Waypoints (x, y, h):")
-    print(waypoints)
 
     x = waypoints[:, 0]
     y = waypoints[:, 1]
