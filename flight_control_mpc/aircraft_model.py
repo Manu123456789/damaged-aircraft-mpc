@@ -25,6 +25,7 @@ class AircraftModel:
         cchi = cos(chi)
         schi = sin(chi)
 
+        # Continuous-time state-space matrices linearized about current state
         Ac = np.array([
             [0.0, 0.0, 0.0,  cgamma * cchi,  -V * cgamma * schi,  -V * sgamma * cchi],
             [0.0, 0.0, 0.0,  cgamma * schi,   V * cgamma * cchi,  -V * sgamma * schi],
@@ -43,5 +44,6 @@ class AircraftModel:
             [0.0, 0.0, 1.0],
         ])
 
+        # Discretize using Euler forward method
         self.Ad = np.eye(6) + Ac * dt
         self.Bd = Bc * dt
