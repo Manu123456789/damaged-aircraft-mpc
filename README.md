@@ -1,4 +1,4 @@
-# Damaged Aircraft MPC Controller
+# Damaged Aircraft MPC Guidance Controller
 This project explores how Model Predictive Control (MPC) can be used to guide a dynamically impaired (damaged) aircraft to a safe landing.
 
 The goal is to simulate a simple aircraft model, introduce time-varying dynamics degrade, and test how the use of a MPC controller can guide the aircraft to landing.
