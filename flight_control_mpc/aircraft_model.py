@@ -12,6 +12,8 @@ class AircraftModel:
         self.gamma = gamma              # Flight path (climb) angle (rad)
         self.dt = dt
 
+        self._update_linearized_kinematics()
+
     def get_state_vector(self):
         return np.array([
             self.pos_north,
