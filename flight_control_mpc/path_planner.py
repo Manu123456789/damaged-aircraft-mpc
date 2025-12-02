@@ -19,8 +19,9 @@ WEIGHT_LAT = 1.0                # weight for lateral (cross-track) error
 GLIDE_ANGLE_DEG = 3.0   # target glide slope angle (deg)
 
 class GlidePathPlanner:
-    def __init__(self, runway_heading_deg):
+    def __init__(self, runway_heading_deg, N):
         self.runway_heading_rad = np.deg2rad(runway_heading_deg)
+        self.N = N
 
     def _build_flight_path_qp(self, aircraft: AircraftModel):
 
@@ -30,12 +31,8 @@ class GlidePathPlanner:
         x_end, y_end, h_end = 0.0, 0.0, 0.0
 
         # Decision variable dimension
-        aircraft_dt = aircraft.dt
-        distance_to_runway = np.sqrt((x0 - x_end)**2 + (y0 - y_end)**2 + (h0 - h_end)**2)
-        estimated_flight_time = distance_to_runway / aircraft.vel
-        self.N = int(np.ceil(estimated_flight_time / aircraft_dt))
-        print(self.N)
-        n_waypoint = self.N + 1
+        N = self.N
+        n_waypoint = N + 1
         n_var = 3 * n_waypoint
 
         # Index helpers from decision vector
@@ -167,7 +164,7 @@ class GlidePathPlanner:
         ## Even though we are using IPOPT here, the problem is a QP.
         ## In a more complete implementation, we could use a dedicated QP solver.
         opti.solver('ipopt', {
-            "print_time": True,
+            "print_time": False,
             "ipopt.print_level": 0,
         })
 
@@ -182,6 +179,16 @@ class GlidePathPlanner:
         sol = opti.solve()
         z_opt = np.array(sol.value(z)).flatten()
         self.waypoints = z_opt.reshape(n_wp, 3)
+
+        start = self.waypoints[0]
+        end   = self.waypoints[-1]
+        print(
+            "[FlightPathPlanner] ✅ Successfully solved flight path:\n"
+            f"  - Waypoints: {n_wp}\n"
+            f"  - Start:  N={start[0]:.1f}  E={start[1]:.1f}  h={start[2]:.1f}\n"
+            f"  - End:    N={end[0]:.1f}  E={end[1]:.1f}  h={end[2]:.1f}"
+        )
+
         
         return self.waypoints
 
@@ -204,7 +211,7 @@ if __name__ == "__main__":
                                 chi=0.0,
                                 gamma=0.0)
     
-    planner = GlidePathPlanner(runway_heading_deg)
+    planner = GlidePathPlanner(runway_heading_deg, N)
     waypoints = planner.solve_for_waypoints(aircraft)
 
     x = waypoints[:, 0]
