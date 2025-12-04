@@ -20,6 +20,7 @@ Developed as the final project for
 This project focuses on **guidance**, not full flight dynamics.  
 The aircraft is modeled as a **point-mass kinematic system**:
 
+### Kinematic Model
 $$
 x = [x,\; y,\; h,\; V,\; \chi,\; \gamma]
 $$
@@ -36,6 +37,33 @@ $$
 \dot{\gamma} = u_{\dot{\gamma}}
 $$
 
+### Linearization for MPC
+
+Although the aircraft obeys nonlinear kinematic equations,  
+the MPC uses a **linearized model** that is recomputed at each control iteration.
+
+At each step, the Jacobians of the nonlinear dynamics are evaluated around the current
+state, producing an LTV (Linear Time-Varying) system:
+
+$$
+A_k = \frac{\partial f}{\partial x}\Big\rvert_{x_k}, \qquad 
+B_k = \frac{\partial f}{\partial u}\Big\rvert_{x_k},
+$$
+
+which is discretized as:
+
+$$
+A_d = I + A_k\Delta t, \qquad B_d = B_k\Delta t.
+$$
+
+This yields the linear prediction model used inside the MPC:
+
+$$
+x_{k+1} = A_d x_k + B_d u_k
+$$
+
+allowing convex optimization while still following the nonlinear glide path.
+
 The output of the MPC is interpreted as **high-level commands** to an onboard autopilot, which is assumed to follow these rates within specified limits.
 
 This abstraction allows us to study **navigation** and **trajectory planning** without modeling aerodynamics, control surfaces, or aircraft attitude.
@@ -48,6 +76,7 @@ This abstraction allows us to study **navigation** and **trajectory planning** w
 - Generates a smooth runway-aligned 3D trajectory
 - Horizon extends all the way to touchdown
 - Produces a full-descent reference path
+- Fully **convex** 
 
 ### Short-Horizon MPC
 - Linear time-varying (LTV) MPC
@@ -57,12 +86,11 @@ This abstraction allows us to study **navigation** and **trajectory planning** w
   - Limited turn rate
   - Limited climb/descent rate
 - Outputs:  
+$$
   - \( \dot{V} \) — acceleration command  
   - \( \dot{\chi} \) — heading-rate command  
   - \( \dot{\gamma} \) — climb-angle-rate command  
+$$
+- Fully **convex** 
 
-### Kinematic Aircraft Model
-- Pure geometric motion  
-- No aerodynamics (no lift/drag)  
-- Suitable for **guidance-level** reasoning  
-- Fast for MPC iteration and visualization
+
