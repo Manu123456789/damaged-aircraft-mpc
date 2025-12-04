@@ -49,13 +49,7 @@ The speed, heading, and climb angle evolve according to **high-level guidance in
 
 $$
 \dot{V} = u_T - g\sin\gamma
-$$
-
-$$
 \dot{\chi} = u_{\dot{\chi}}
-$$
-
-$$
 \dot{\gamma} = u_{\dot{\gamma}}
 $$
 
