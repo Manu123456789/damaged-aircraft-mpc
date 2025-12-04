@@ -155,6 +155,8 @@ class GuidanceMPC:
         # Dynamics
         for k in range(N):
             # Dynamics: δx_{k+1} = Ad δx_k + Bd δu_k + f̄*dt
+            xk = X[:, k]
+            uk = U[:, k]
             x_next = ca.mtimes(Ad, xk) + ca.mtimes(Bd, uk) + drift
             opti.subject_to(X[:, k+1] == x_next)
 
