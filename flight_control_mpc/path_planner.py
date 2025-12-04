@@ -7,11 +7,17 @@ from aircraft_model import AircraftModel
 # --------------------------------------------------------------
 # Cost function weights
 # --------------------------------------------------------------
-WEIGHT_SMOOTH = 1.0             # weight for path smoothness 
-WEIGHT_HEIGHT_SMOOTH = 1.0      # weight for altitude smoothness
+WEIGHT_SMOOTH = 10.0            # weight for path smoothness 
+WEIGHT_HEIGHT_SMOOTH = 10.0      # weight for altitude smoothness
 WEIGHT_LENGTH = 1.0             # weight for path length
-WEIGHT_GS = 1.0                 # weight for glideslope altitude error
-WEIGHT_LAT = 1.0                # weight for lateral (cross-track) error
+WEIGHT_GS = 10.0                 # weight for glideslope altitude error
+WEIGHT_LAT = 10.0                # weight for lateral (cross-track) error
+
+ALIGN_WEIGHT = 100.0
+
+K_INIT = 5          # number of segments to gently align with initial heading
+INIT_ALIGN_WEIGHT = 100.0  # tune this
+
 
 # --------------------------------------------------------------
 # Parameters
@@ -27,6 +33,10 @@ class GlidePathPlanner:
 
         # Extract current position
         x0, y0, h0 = aircraft.pos_north, aircraft.pos_east, aircraft.altitude
+        # Initial heading direction (unit vector in NE frame)
+        chi0 = aircraft.chi                 # radians
+        hx = np.cos(chi0)                   # heading x (north)
+        hy = np.sin(chi0)                   # heading y (east)
         # Runway assumed at origin without loss of generality
         x_end, y_end, h_end = 0.0, 0.0, 0.0
 
@@ -73,6 +83,31 @@ class GlidePathPlanner:
                     id1 = 3 * (i + 1) + d
                     diff = z[id1] - z[id0]
                     J += WEIGHT_LENGTH * diff**2
+
+        # --------------------------------------------------------------
+        # Initial-alignment region: first K segments parallel to initial heading
+        # --------------------------------------------------------------
+        for i in range(0, min(K_INIT, N)):
+            x_i   = z[idx_x(i)]
+            x_ip1 = z[idx_x(i + 1)]
+            y_i   = z[idx_y(i)]
+            y_ip1 = z[idx_y(i + 1)]
+
+            seg_dx = x_ip1 - x_i
+            seg_dy = y_ip1 - y_i
+
+            # Cross product with initial heading: zero means parallel
+            cross_h = seg_dx * hy - seg_dy * hx
+
+            # Weight that can decay over these first K segments (optional)
+            w_init = (1.0 - i / max(1, K_INIT))**2
+
+            # Soft penalty to make early segments parallel to initial heading
+            J += w_init * INIT_ALIGN_WEIGHT * cross_h**2
+
+            # Optional: enforce "forward" along initial heading so it doesn't go backwards
+            opti.subject_to(seg_dx * hx + seg_dy * hy >= 0)
+
 
         # --------------------------------------------------------------
         # Glideslope + centerline tracking
@@ -152,7 +187,9 @@ class GlidePathPlanner:
                 seg_dy = y_ip1 - y_i
 
                 # Parallel to runway: cross = 0
-                opti.subject_to(seg_dx * dy - seg_dy * dx == 0)
+                cross = seg_dx * dy - seg_dy * dx
+                w_align = (i / N)**2
+                J += w_align * ALIGN_WEIGHT * cross**2
 
                 # Forward along runway direction (relative to heading convention)
                 opti.subject_to(seg_dx * dx + seg_dy * dy >= 0)
@@ -174,7 +211,7 @@ class GlidePathPlanner:
 
         return opti, z, n_waypoint
 
-    def solve_for_waypoints(self, aircraft: AircraftModel):
+    def solve_for_waypoints(self, aircraft: AircraftModel, verbose=True):
         opti, z, n_wp = self._build_flight_path_qp(aircraft)
         sol = opti.solve()
         z_opt = np.array(sol.value(z)).flatten()
@@ -182,11 +219,12 @@ class GlidePathPlanner:
 
         start = self.waypoints[0]
         end   = self.waypoints[-1]
-        print(
-            "[FlightPathPlanner] ✅ Successfully solved flight path:\n"
-            f"  - Waypoints: {n_wp}\n"
-            f"  - Start:  N={start[0]:.1f}  E={start[1]:.1f}  h={start[2]:.1f}\n"
-            f"  - End:    N={end[0]:.1f}  E={end[1]:.1f}  h={end[2]:.1f}"
+        if verbose:
+            print(
+                "[FlightPathPlanner] ✅ Successfully solved flight path:\n"
+                f"  - Waypoints: {n_wp}\n"
+                f"  - Start:  N={start[0]:.1f}  E={start[1]:.1f}  h={start[2]:.1f}\n"
+                f"  - End:    N={end[0]:.1f}  E={end[1]:.1f}  h={end[2]:.1f}"
         )
 
         
@@ -194,13 +232,13 @@ class GlidePathPlanner:
 
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
-    from glide_plots import (
+    from plot import (
         plot_3d_path,
         plot_ground_track,
         plot_altitude,
     )
 
-    N = 100
+    N = 50
     start_pos = (3000.0, -5000.0, 500.0)    # (x, y, h) in meters
     runway_heading_deg = 90                 # 0 is North, 90 is East
 
@@ -208,7 +246,7 @@ if __name__ == "__main__":
                                 pos_east=-5000,
                                 altitude=500.0,
                                 vel=50,
-                                heading_deg=0.0,
+                                heading_deg=90,
                                 climb_angle_deg=0.0)
     
     planner = GlidePathPlanner(runway_heading_deg, N)
