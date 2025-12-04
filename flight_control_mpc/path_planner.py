@@ -115,7 +115,7 @@ class GlidePathPlanner:
                 second_diff = z[id2] - 2 * z[id1] + z[id0]
                 J += w * second_diff**2
 
-        # Length-like term
+        # Squared Euclidean Distance
         if WEIGHT_LENGTH > 0.0:
             for i in range(N):
                 for d in range(3):
