@@ -10,12 +10,12 @@ from aircraft_model import AircraftModel
 WEIGHT_SMOOTH = 10.0                # weight for path smoothness 
 WEIGHT_HEIGHT_SMOOTH = 10.0         # weight for altitude smoothness
 WEIGHT_LENGTH = 1.0                 # weight for path length
-WEIGHT_GS = 10.0                    # weight for glideslope altitude error
+WEIGHT_GS = 100.0                    # weight for glideslope altitude error
 WEIGHT_LAT = 10.0                   # weight for lateral (cross-track) error
 
 K_INIT = 10                         # number of segments to gently align with initial heading
-INIT_ALIGN_WEIGHT = 100.0           # weight for initial heading alignment
-FINAL_ALIGN_WEIGHT = 100.0          # weight for final runway heading alignment
+INIT_ALIGN_WEIGHT = 10.0           # weight for initial heading alignment
+FINAL_ALIGN_WEIGHT = 10.0          # weight for final runway heading alignment
 
 # --------------------------------------------------------------
 # Parameters
@@ -91,7 +91,8 @@ class GlidePathPlanner:
         def idx_h(i): return 3 * i + 2
 
         # Build optimization problem using CasADi's Opti stack
-        opti = ca.Opti()
+        opti = ca.Opti('conic')
+        # opti = ca.Opti()
 
         # Decision variables (x0, y0, h0, ..., xN, yN, hN)
         z = opti.variable(n_var)
@@ -163,7 +164,8 @@ class GlidePathPlanner:
             s_i = xi * dx + yi * dy  # runway at origin
 
             # Use absolute distance from runway along the runway axis
-            s_dist = ca.fabs(s_i)    # |s_i| so altitude is always >= 0 for positive distance
+            s_dist = -s_i                # distance *from* runway along approach
+            opti.subject_to(s_dist >= 0)
 
             # Cross-track error (lateral distance to runway centerline)
             c_i = xi * (-dy) + yi * dx
@@ -223,13 +225,15 @@ class GlidePathPlanner:
         # --------------------------------------------------------------
         # Solver setup
         # --------------------------------------------------------------
-
-        ## Even though we are using IPOPT here, the problem is a QP.
-        ## In a more complete implementation, we could use a dedicated QP solver.
-        opti.solver('ipopt', {
-            "print_time": False,
-            "ipopt.print_level": 0,
-        })
+        opts = {
+            "osqp":{
+            "verbose": False,
+            "polish": True,
+            "max_iter": 4000,
+            "eps_abs": 1e-4,
+            "eps_rel": 1e-4,
+        }}
+        opti.solver('osqp', opts)
 
         self.opti = opti
         self.z = z
@@ -254,7 +258,7 @@ if __name__ == "__main__":
     aircraft = AircraftModel(pos_north=5000.0,
                                 pos_east=5600,
                                 altitude=1000.0,
-                                vel=50,
+                                vel_kt=100,
                                 heading_deg=30.0,
                                 climb_angle_deg=0.0,)
     
@@ -273,7 +277,7 @@ if __name__ == "__main__":
         x,
         y,
         RUNWAY_HEADING_DEG,
-        heading_ang = 0.0,
+        heading_deg = 0.0,
     )
 
     # Plot altitude
