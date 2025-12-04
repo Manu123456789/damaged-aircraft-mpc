@@ -33,6 +33,7 @@ class GuidanceMPC:
         self.dt = mpc_dt
         self.path_planner = path_planner
         self.glide_speed_ms = aircraft.glide_speed_ms
+        self.approach_speed_ms = aircraft.approach_speed_ms
         self._build_mpc_problem(aircraft)
 
     def solve_for_control_input(self, aircraft: AircraftModel):
@@ -221,14 +222,14 @@ class GuidanceMPC:
         D_margin = 50.0        # meters before runway threshold
         s_end = max(s_wp[-1] - D_margin, 0.0) 
         for k in range(T):
-            s_k = self.glide_speed_ms * self.dt * k
+            s_k = self.approach_speed_ms * self.dt * k
             s_ref[k] = np.clip(s_k, 0.0, s_end)
 
         # 4) Reference positions and speeds by interpolation
         north_ref = np.interp(s_ref, s_wp, north_wp)
         east_ref  = np.interp(s_ref, s_wp, east_wp)
         alt_ref   = np.interp(s_ref, s_wp, alt_wp)
-        v_ref     = np.full(T, self.glide_speed_ms)
+        v_ref     = np.full(T, self.approach_speed_ms)
 
         # 5) Reference headings and flight path angles (keep current)
         chi_ref   = np.full(T, aircraft.chi)
