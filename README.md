@@ -65,7 +65,7 @@ allowing convex optimization while still following the nonlinear glide path.
 
 The output of the MPC is interpreted as **high-level commands** to an onboard autopilot, which is assumed to follow these rates within specified limits.
 
-This abstraction allows us to study **navigation** and **trajectory planning** without modeling aerodynamics, control surfaces, or aircraft attitude.
+This simplification allows us to study **navigation** and **trajectory planning** without modeling aerodynamics, control surfaces, or aircraft attitude.
 
 ---
 
