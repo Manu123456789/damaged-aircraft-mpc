@@ -385,7 +385,7 @@ def plot_guidance_overview(
     x, y, h,
     runway_heading_deg,
     x_mpc, y_mpc, h_mpc,
-    u_thrust, u_heading, u_climb_rate, 
+    u_thrust, u_heading, u_climb_rate,
     vel_ms, heading_deg, climb_angle_deg,
     glide_angle_deg=3.0,
     runway_length=2000.0,
@@ -393,16 +393,21 @@ def plot_guidance_overview(
     title_ground="Ground Track (Top-down View)",
     title_alt="Altitude vs Distance From Runway",
 ):
+    """
+    Compact 2x2 overview:
+      [0,0] Ground track      [0,1] Altitude vs |s|
+      [1,0] Current state     [1,1] MPC inputs
+    """
     # --- 0) Convert and prep inputs ---
-    vel_kt = vel_ms * 1.94384
+    vel_kt = float(vel_ms) * 1.94384
     u = np.array([u_thrust, u_heading, u_climb_rate], dtype=float)
 
-    x      = np.asarray(x)
-    y      = np.asarray(y)
-    h      = np.asarray(h)
-    x_mpc  = np.asarray(x_mpc)
-    y_mpc  = np.asarray(y_mpc)
-    h_mpc  = np.asarray(h_mpc)
+    x      = np.asarray(x, dtype=float)
+    y      = np.asarray(y, dtype=float)
+    h      = np.asarray(h, dtype=float)
+    x_mpc  = np.asarray(x_mpc, dtype=float)
+    y_mpc  = np.asarray(y_mpc, dtype=float)
+    h_mpc  = np.asarray(h_mpc, dtype=float)
 
     # --- 1) Project onto runway axis for altitude subplot ---
     heading_rad, dx, dy = _runway_axis(runway_heading_deg)
@@ -416,133 +421,46 @@ def plot_guidance_overview(
     else:
         s_abs_mpc = np.array([])
 
-    # --- 2) Create or reuse figure/subplots ---
+    # --- 2) Create or reuse figure/subplots (2x2) ---
     if not hasattr(plot_guidance_overview, "_fig"):
-        # ============================================================
-        # FIGURE + GRID: 4 columns
-        #   [state gauges] | [ground] | [altitude] | [MPC inputs]
-        # Left column is further split into 3 rows for gauges
-        # ============================================================
-        fig = plt.figure(figsize=(20, 6), num="guidance_overview")
+        fig = plt.figure(figsize=(15, 8), num="guidance_overview")
+
         gs = fig.add_gridspec(
-            1, 4,
-            width_ratios=[1.2, 2.2, 2.0, 1.0]
+            2, 2,
+            height_ratios=[3.0, 1.0],  # top row ~2x height of bottom row
+            hspace=0.4,                # vertical spacing
+            wspace=0.3,                # horizontal spacing
         )
 
-        # Left column: 3 gauges (airspeed, heading, climb/pos)
-        gs_state = gs[0].subgridspec(3, 1, height_ratios=[1, 1, 1], hspace=0.5)
-        ax_v     = fig.add_subplot(gs_state[0])                   # airspeed
-        ax_hdg   = fig.add_subplot(gs_state[1], projection="polar")  # heading
-        ax_climb = fig.add_subplot(gs_state[2])                   # climb + x/y/h
+        ax_g     = fig.add_subplot(gs[0, 0])  # ground track (big)
+        ax_h     = fig.add_subplot(gs[0, 1])  # altitude (big)
+        ax_state = fig.add_subplot(gs[1, 0])  # current state (short)
+        ax_u     = fig.add_subplot(gs[1, 1])  # inputs (short)
 
-        # Main three panels
-        ax_g = fig.add_subplot(gs[1])
-        ax_h = fig.add_subplot(gs[2])
-        ax_u = fig.add_subplot(gs[3])
 
         # Store axes
-        plot_guidance_overview._fig      = fig
-        plot_guidance_overview._ax_v     = ax_v
-        plot_guidance_overview._ax_hdg   = ax_hdg
-        plot_guidance_overview._ax_climb = ax_climb
-        plot_guidance_overview._ax_g     = ax_g
-        plot_guidance_overview._ax_h     = ax_h
-        plot_guidance_overview._ax_u     = ax_u
+        plot_guidance_overview._fig     = fig
+        plot_guidance_overview._ax_g    = ax_g
+        plot_guidance_overview._ax_h    = ax_h
+        plot_guidance_overview._ax_u    = ax_u
+        plot_guidance_overview._ax_state = ax_state
 
-        # =========================
-        # LEFT COLUMN: GAUGES
-        # =========================
-
-        # --- Airspeed gauge (horizontal bar) ---
-        ax_v.set_title("Airspeed [kt]")
-        vmax_kt = max(vel_kt * 1.5, 60.0)   # simple dynamic range
-        ax_v.set_xlim(0, vmax_kt)
-        ax_v.set_yticks([])
-        ax_v.set_xlabel("kt")
-
-        airspeed_bar = ax_v.barh([0], [vel_kt], height=0.6)[0]
-        airspeed_text = ax_v.text(
-            0.98, 0.5, f"{vel_kt:.1f}",
-            transform=ax_v.transAxes,
-            ha="right",
-            va="center",
-            fontsize=10,
-        )
-
-        plot_guidance_overview._airspeed_bar  = airspeed_bar
-        plot_guidance_overview._airspeed_text = airspeed_text
-        plot_guidance_overview._vmax_kt       = vmax_kt
-
-        # --- Heading gauge (simple compass) ---
-        ax_hdg.set_title("Heading")
-        ax_hdg.set_theta_zero_location("N")  # 0° at North
-        ax_hdg.set_theta_direction(-1)       # CW positive
-        ax_hdg.set_ylim(0, 1.0)
-        ax_hdg.set_yticks([])
-        ax_hdg.set_xticks(np.deg2rad([0, 90, 180, 270]))
-        ax_hdg.set_xticklabels(["N", "E", "S", "W"])
-
-        hdg_angle = np.deg2rad(heading_deg if heading_deg is not None else 0.0)
-        heading_arrow, = ax_hdg.plot(
-            [hdg_angle, hdg_angle], [0, 1.0], linewidth=2
-        )
-        heading_text = ax_hdg.text(
-            0.5, -0.15,
-            f"{heading_deg:.1f}°" if heading_deg is not None else "—",
-            transform=ax_hdg.transAxes,
-            ha="center",
-            va="top",
-            fontsize=10,
-        )
-
-        plot_guidance_overview._heading_arrow = heading_arrow
-        plot_guidance_overview._heading_text  = heading_text
-
-        # --- Climb angle gauge + x/y/h text ---
-        ax_climb.set_title("Climb Angle [deg]")
-        climb_span = 10.0
-        ax_climb.set_ylim(-climb_span, climb_span)
-        ax_climb.set_xlim(0, 1)
-        ax_climb.axhline(0.0, color="gray", linestyle="--", linewidth=1)
-        ax_climb.set_xticks([])
-        ax_climb.set_ylabel("deg")
-
-        climb_line, = ax_climb.plot(
-            [0.0, 1.0],
-            [climb_angle_deg, climb_angle_deg],
-            linewidth=3,
-        )
-
-        # current position text (x,y,h)
-        pos_text = ax_climb.text(
-            0.5, -0.25,
-            "",
-            transform=ax_climb.transAxes,
-            ha="center",
-            va="top",
-            fontsize=9,
-        )
-
-        plot_guidance_overview._climb_line = climb_line
-        plot_guidance_overview._pos_text   = pos_text
-        plot_guidance_overview._climb_span = climb_span
-
-        # =========================
-        # MIDDLE-LEFT: Ground track
-        # =========================
+        # =====================================================
+        # TOP-LEFT: Ground track + runway + plane icon
+        # =====================================================
         (line_plan_g,) = ax_g.plot(
             [], [], "--", color="blue",
-            label="Long Horizon Planned Flight Path", linewidth=1
+            label="Long-horizon planned path", linewidth=2
         )
-        (line_mpc_g,)  = ax_g.plot(
-            [], [], "-",  color="orange",
-            label="Short Horizon MPC Flight Path", linewidth=4
+        (line_mpc_g,) = ax_g.plot(
+            [], [], "-", color="orange",
+            label="Short-horizon MPC path", linewidth=6, alpha=0.6
         )
 
         plot_guidance_overview._line_plan_g = line_plan_g
         plot_guidance_overview._line_mpc_g  = line_mpc_g
 
-        # Runway
+        # Runway polygon in (North x, East y)
         L = runway_length
         W = runway_width
         corners_local = np.array(
@@ -559,20 +477,20 @@ def plot_guidance_overview(
         y_rw = u_loc * dy + v_loc * dx   # East
 
         ax_g.fill(
-            y_rw,
-            x_rw,
+            y_rw, x_rw,
             facecolor="orange",
             edgecolor="black",
-            alpha=0.8,
+            alpha=0.7,
             label="Runway",
         )
 
         ax_g.set_xlabel("y (East) [m]")
         ax_g.set_ylabel("x (North) [m]")
-        ax_g.set_aspect("equal", adjustable="box")
-        ax_g.legend(loc="best")
+        ax_g.set_aspect("auto")
+        ax_g.grid(True, linestyle="--", alpha=0.3)
+        ax_g.legend(loc="best", fontsize=8)
 
-        # Ground track axis limits once
+        # Ground track axis limits (based on current data + runway)
         xs = [x_rw]
         ys = [y_rw]
         if x.size > 0 and y.size > 0:
@@ -590,23 +508,20 @@ def plot_guidance_overview(
         dy_range = y_max - y_min
 
         span_xy = max(dx_range, dy_range, 1.0)
-        pad_factor = 0.2
-        pad = pad_factor * span_xy
+        pad = 0.2 * span_xy
         min_pad = 0.2 * runway_length
         pad = max(pad, min_pad)
 
-        ax_g.set_xlim(y_min - pad, y_max + pad)  # x-axis = East
-        ax_g.set_ylim(x_min - pad, x_max + pad)  # y-axis = North
+        ax_g.set_xlim(y_min - pad, y_max + pad)
+        ax_g.set_ylim(x_min - pad, x_max + pad)
 
-        # Plane shape
+        # Simple plane shape (in local axes) to be rotated/translated
         plane_body = np.array([
             [0.0,   0.0],   # nose
             [-1.0, -0.4],   # left wing
             [-0.7,  0.0],   # fuselage center
             [-1.0,  0.4],   # right wing
         ])
-        plot_guidance_overview._plane_body = plane_body
-
         plane_patch = Polygon(
             [[0, 0], [0, 0], [0, 0]],
             closed=True,
@@ -614,35 +529,40 @@ def plot_guidance_overview(
             edgecolor="black"
         )
         ax_g.add_patch(plane_patch)
+
+        plot_guidance_overview._plane_body  = plane_body
         plot_guidance_overview._plane_patch = plane_patch
 
-        # =========================
-        # MIDDLE-RIGHT: Altitude profile
-        # =========================
-        (line_gs_h,)   = ax_h.plot([], [], "--", label=f"{glide_angle_deg:.1f}° glideslope")
+        # =====================================================
+        # TOP-RIGHT: Altitude vs distance |s|
+        # =====================================================
+        (line_gs_h,) = ax_h.plot(
+            [], [], "--", color="black", 
+            label=f"{glide_angle_deg:.1f}° glideslope", linewidth=1
+        )
         (line_plan_h,) = ax_h.plot(
             [], [], "--", color="blue",
-            label="Long Horizon Planner Flight Path", linewidth=1
+            label="Long-horizon planned path", linewidth=2
         )
-        (line_mpc_h,)  = ax_h.plot(
-            [], [], "-",  color="orange",
-            label="Short Horizon MPC Predicted Path", linewidth=4
+        (line_mpc_h,) = ax_h.plot(
+            [], [], "-", color="orange",
+            label="Short-horizon MPC prediction", linewidth=6, alpha=0.6
         )
-
-        plot_guidance_overview._line_plan_h = line_plan_h
-        plot_guidance_overview._line_mpc_h  = line_mpc_h
-        plot_guidance_overview._line_gs_h   = line_gs_h
-
         (first_pt_marker,) = ax_h.plot(
-            [], [], "X", color="red", markersize=8, label="Current Position"
+            [], [], "X", color="red", markersize=8, label="Current position"
         )
-        plot_guidance_overview._first_pt_marker = first_pt_marker
+
+        plot_guidance_overview._line_gs_h         = line_gs_h
+        plot_guidance_overview._line_plan_h       = line_plan_h
+        plot_guidance_overview._line_mpc_h        = line_mpc_h
+        plot_guidance_overview._first_pt_marker   = first_pt_marker
 
         ax_h.set_xlabel("Absolute distance from runway |s| [m]")
         ax_h.set_ylabel("Altitude h [m]")
-        ax_h.grid(True)
-        ax_h.legend(loc="best")
+        ax_h.grid(True, linestyle="--", alpha=0.3)
+        ax_h.legend(loc="best", fontsize=8)
 
+        # Precompute glide-slope envelope
         gamma = np.deg2rad(glide_angle_deg)
         tan_gamma = np.tan(gamma)
 
@@ -671,18 +591,17 @@ def plot_guidance_overview(
             h_candidates.append(h_mpc)
         h_all = np.concatenate(h_candidates)
         h_max = max(h_all.max(), 0.0)
-
         pad_h = 0.3 * max(h_max, 1.0)
 
         ax_h.set_xlim(0.0 - pad_s, s_max_gs)
         ax_h.set_ylim(0.0 - pad_h, h_max + pad_h)
-        ax_h.invert_xaxis()
+        ax_h.invert_xaxis()  # runway at the right
 
-        # =========================
-        # RIGHT: control inputs (bar chart)
-        # =========================
+        # =====================================================
+        # BOTTOM-RIGHT: control inputs (bar chart)
+        # =====================================================
         ax_u.set_title("MPC Inputs")
-        u_labels = ["Speed Brake (m/s²)", "Heading Rate (deg/s)", "Climb Rate (deg/s)"]
+        u_labels = ["Accel (m/s²)", "Heading rate (deg/s)", "Climb rate (deg/s)"]
         y_pos = np.arange(len(u_labels))
 
         bars = ax_u.barh(y_pos, u, color="gray")
@@ -700,74 +619,75 @@ def plot_guidance_overview(
         xlim_max =  u_span + pad_u
         ax_u.set_xlim(xlim_min, xlim_max)
         plot_guidance_overview._u_xlim = (xlim_min, xlim_max)
+        
+        # =====================================================
+        # BOTTOM-LEFT: current state summary (pretty card)
+        # =====================================================
+        ax_state.set_title("Current State", loc="left", fontsize=11, fontweight="bold")
+        ax_state.axis("off")
+
+        # Nice rounded box style
+        bbox_style = dict(
+            boxstyle="round,pad=0.6",
+            fc="#f7f7f7",     # light gray background
+            ec="#b0b0b0",     # border color
+            lw=1.0,
+        )
+
+        state_box = ax_state.text(
+            0.02, 0.98,
+            "",  # filled in later
+            transform=ax_state.transAxes,
+            ha="left",
+            va="top",
+            fontsize=10,
+            family="monospace",  # align numbers nicely
+            bbox=bbox_style,
+        )
+
+        plot_guidance_overview._state_box = state_box
 
         fig.tight_layout()
+        # fig.subplots_adjust(top=0.5)  # give extra padding at the top
+
 
     else:
-        fig        = plot_guidance_overview._fig
-        ax_v       = plot_guidance_overview._ax_v
-        ax_hdg     = plot_guidance_overview._ax_hdg
-        ax_climb   = plot_guidance_overview._ax_climb
-        ax_g       = plot_guidance_overview._ax_g
-        ax_h       = plot_guidance_overview._ax_h
-        ax_u       = plot_guidance_overview._ax_u
+        fig       = plot_guidance_overview._fig
+        ax_g      = plot_guidance_overview._ax_g
+        ax_h      = plot_guidance_overview._ax_h
+        ax_u      = plot_guidance_overview._ax_u
+        ax_state  = plot_guidance_overview._ax_state
 
-        line_plan_g = plot_guidance_overview._line_plan_g
-        line_mpc_g  = plot_guidance_overview._line_mpc_g
-        plane_patch = plot_guidance_overview._plane_patch
-        plane_body  = plot_guidance_overview._plane_body
+    # Shared artists (first + subsequent calls)
+    line_plan_g = plot_guidance_overview._line_plan_g
+    line_mpc_g  = plot_guidance_overview._line_mpc_g
+    plane_body  = plot_guidance_overview._plane_body
+    plane_patch = plot_guidance_overview._plane_patch
 
-        line_plan_h       = plot_guidance_overview._line_plan_h
-        line_mpc_h        = plot_guidance_overview._line_mpc_h
-        line_gs_h         = plot_guidance_overview._line_gs_h
-        first_pt_marker   = plot_guidance_overview._first_pt_marker
+    line_gs_h       = plot_guidance_overview._line_gs_h
+    line_plan_h     = plot_guidance_overview._line_plan_h
+    line_mpc_h      = plot_guidance_overview._line_mpc_h
+    first_pt_marker = plot_guidance_overview._first_pt_marker
 
-        airspeed_bar  = plot_guidance_overview._airspeed_bar
-        airspeed_text = plot_guidance_overview._airspeed_text
-        vmax_kt       = plot_guidance_overview._vmax_kt
-
-        heading_arrow = plot_guidance_overview._heading_arrow
-        heading_text  = plot_guidance_overview._heading_text
-
-        climb_line    = plot_guidance_overview._climb_line
-        pos_text      = plot_guidance_overview._pos_text
-        climb_span    = plot_guidance_overview._climb_span
-
-
-    # Get shared objects for both first and subsequent calls
-    bars_u = plot_guidance_overview._bars_u
+    bars_u          = plot_guidance_overview._bars_u
     xlim_min, xlim_max = plot_guidance_overview._u_xlim
 
-    airspeed_bar  = plot_guidance_overview._airspeed_bar
-    airspeed_text = plot_guidance_overview._airspeed_text
-    vmax_kt       = plot_guidance_overview._vmax_kt
-
-    heading_arrow = plot_guidance_overview._heading_arrow
-    heading_text  = plot_guidance_overview._heading_text
-
-    climb_line    = plot_guidance_overview._climb_line
-    pos_text      = plot_guidance_overview._pos_text
-    climb_span    = plot_guidance_overview._climb_span
+    state_box = plot_guidance_overview._state_box
 
     # =========================
-    # UPDATE LEFT: ground track
+    # UPDATE: ground track
     # =========================
-    plot_guidance_overview._line_plan_g.set_data(y,     x)
-    plot_guidance_overview._line_mpc_g.set_data(y_mpc, x_mpc)
+    line_plan_g.set_data(y,     x)
+    line_mpc_g.set_data(y_mpc, x_mpc)
     ax_g.set_title(title_ground)
 
-    # Plane icon on ground track
-    x_path = x
-    y_path = y
-    plane_patch = plot_guidance_overview._plane_patch
-    plane_body  = plot_guidance_overview._plane_body
-
-    if x_path.size >= 1 and y_path.size >= 1 and heading_deg is not None:
-        x0 = x_path[0]  # North
-        y0 = y_path[0]  # East
+    # Plane icon at first point of path, oriented by heading
+    if x.size >= 1 and y.size >= 1 and heading_deg is not None:
+        x0 = x[0]  # North
+        y0 = y[0]  # East
 
         h_deg = float(np.asarray(heading_deg).ravel()[0])  # 0 = North, 90 = East
-        theta = np.deg2rad(90.0 - h_deg)  # convert to matplotlib frame
+        theta = np.deg2rad(90.0 - h_deg)  # convert to matplotlib "x east, y north" frame
 
         xlim = ax_g.get_xlim()
         ylim = ax_g.get_ylim()
@@ -779,17 +699,15 @@ def plot_guidance_overview(
             [np.sin(theta),  np.cos(theta)],
         ])
         plane_pts = (plane_body @ R.T) * scale
-
         plane_pts[:, 0] += y0
         plane_pts[:, 1] += x0
-
         plane_patch.set_xy(plane_pts)
 
     # =========================
-    # UPDATE MIDDLE: altitude
+    # UPDATE: altitude plot
     # =========================
-    plot_guidance_overview._line_plan_h.set_data(s_abs,    h)
-    plot_guidance_overview._line_mpc_h.set_data(s_abs_mpc, h_mpc)
+    line_plan_h.set_data(s_abs,    h)
+    line_mpc_h.set_data(s_abs_mpc, h_mpc)
     ax_h.set_title(title_alt)
 
     if s_abs_mpc.size > 0 and h_mpc.size > 0:
@@ -799,7 +717,6 @@ def plot_guidance_overview(
         s_path = s_abs
         h_path = h
 
-    first_pt_marker = plot_guidance_overview._first_pt_marker
     if s_path.size > 0 and h_path.size > 0:
         s0 = s_path[0]
         h0 = h_path[0]
@@ -808,7 +725,7 @@ def plot_guidance_overview(
         first_pt_marker.set_data([], [])
 
     # =========================
-    # UPDATE RIGHT: bar chart
+    # UPDATE: bar chart (inputs)
     # =========================
     for i, bar in enumerate(bars_u):
         if i < u.size:
@@ -819,38 +736,61 @@ def plot_guidance_overview(
     ax_u.set_xlim(xlim_min, xlim_max)
 
     # =========================
-    # UPDATE GAUGES (LEFT COLUMN)
+    # UPDATE: current state text panel
     # =========================
-
-    # --- Airspeed gauge ---
-    new_v = np.clip(vel_kt, 0.0, vmax_kt)
-    airspeed_bar.set_width(new_v)
-    airspeed_text.set_text(f"{vel_kt:.1f}")
-
-    # --- Heading gauge ---
-    if heading_deg is not None:
-        hdg_angle = np.deg2rad(float(heading_deg))
-        heading_arrow.set_data([hdg_angle, hdg_angle], [0.0, 1.0])
-        heading_text.set_text(f"{heading_deg:.1f}°")
-    else:
-        heading_text.set_text("—")
-
-    # --- Climb angle gauge + position text ---
-    climb_val = float(climb_angle_deg if climb_angle_deg is not None else 0.0)
-    climb_val = np.clip(climb_val, -climb_span, climb_span)
-    climb_line.set_ydata([climb_val, climb_val])
-
+    # Default strings
     if x.size > 0 and y.size > 0 and h.size > 0:
-        x0 = x[0]
-        y0 = y[0]
-        h0 = h[0]
-        pos_text.set_text(
-            f"x = {x0:.0f} m\n"
-            f"y = {y0:.0f} m\n"
-            f"h = {h0:.0f} m"
-        )
+        x0 = float(x[0])
+        y0 = float(y[0])
+        h0 = float(h[0])
+        pos_str = f"x = {x0:7.1f} m   y = {y0:7.1f} m   h = {h0:7.1f} m"
     else:
-        pos_text.set_text("")
+        x0 = y0 = h0 = np.nan
+        pos_str = "Position:   —"
+
+    if heading_deg is not None:
+        hdg_str = f"{float(heading_deg):5.1f}°"
+    else:
+        hdg_str = "   —  "
+
+    if climb_angle_deg is not None:
+        climb_str = f"{float(climb_angle_deg):5.1f}°"
+    else:
+        climb_str = "   —  "
+
+    # Along-runway and cross-track metrics (if we have position)
+    dist_str = "Distance to RW:   —"
+    xtk_str  = "Cross-track:      —"
+    gs_err_str = "Glideslope err:   —"
+
+    if x.size > 0 and y.size > 0:
+        # Use the same runway axis you defined earlier: dx, dy
+        s0 = x0 * dx + y0 * dy              # signed along-runway distance
+        c0 = -x0 * dy + y0 * dx             # signed cross-track (left/right)
+        dist_km = abs(s0) / 1000.0
+
+        dist_str = f"Distance to RW: {dist_km:5.2f} km"
+        xtk_str  = f"Cross-track:   {c0:7.1f} m"
+
+        # Glideslope error (current altitude vs ideal glide)
+        gamma = np.deg2rad(glide_angle_deg)
+        h_gs0 = abs(s0) * np.tan(gamma)
+        gs_err = h0 - h_gs0
+        gs_err_str = f"Glideslope err: {gs_err:7.1f} m"
+
+    # Build pretty multi-line card
+    lines = [
+        f"Airspeed:    {vel_kt:6.1f} kt",
+        f"Heading:     {hdg_str}",
+        f"Climb angle: {climb_str}",
+        "",
+        pos_str,
+        dist_str,
+        xtk_str,
+        gs_err_str,
+    ]
+
+    state_box.set_text("\n".join(lines))
 
     # =========================
     # Redraw for animation
@@ -858,4 +798,5 @@ def plot_guidance_overview(
     fig.canvas.draw_idle()
     fig.canvas.flush_events()
 
+    # Keep the same return type as before
     return fig, (ax_g, ax_h, ax_u)
