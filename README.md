@@ -14,11 +14,7 @@ Developed as the final project for **UC Berkeley MECENG 231A – Model Predictiv
 
 ---
 
-## ✈️ Overview
-
-This project focuses on **guidance**, not full flight dynamics.  
-The aircraft is modeled as a **point-mass kinematic system**:
-
+## ✈️ Model
 ### Kinematic Model
 
 The aircraft is modeled as a **3D point-mass kinematic system** with six states:
