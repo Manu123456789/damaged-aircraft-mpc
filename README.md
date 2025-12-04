@@ -48,8 +48,8 @@ $$
 The speed, heading, and climb angle evolve according to **high-level guidance inputs**:
 
 $$
-\dot{V} = u_T - g\sin\gamma
-\dot{\chi} = u_{\dot{\chi}}
+\dot{V} = u_T - g\sin\gamma,\qquad
+\dot{\chi} = u_{\dot{\chi}},\qquad
 \dot{\gamma} = u_{\dot{\gamma}}
 $$
 
