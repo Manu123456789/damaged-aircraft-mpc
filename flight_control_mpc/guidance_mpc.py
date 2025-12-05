@@ -19,6 +19,14 @@ R_THRUST  = 0.1     # thrust/braking effort
 R_CHI_DOT = 0.1     # heading rate effort
 R_GAM_DOT = 0.1     # flight path angle rate effort
 
+# Optional control *rate* penalty weights (smooth control usage)
+S_THRUST  = 0.0 #0.01
+S_CHI_DOT = 0.0 #0.01
+S_GAM_DOT = 0.0 #0.01
+
+# Terminal vertical-velocity (impact energy) penalty
+W_VZ_FINAL = 0.0 # 50.0
+
 # --------------------------------------------------------------
 # MPC Constraint Constants
 # --------------------------------------------------------------
@@ -128,7 +136,6 @@ class GuidanceMPC:
         drift = opti.parameter(nx)              # affine drift
         Xref_rel = opti.parameter(nx, N + 1)    # reference in delta coords
 
-        # State cost matrix
         Q = np.diag([
             Q_POS_N,   # pos_north
             Q_POS_E,   # pos_east
@@ -142,9 +149,16 @@ class GuidanceMPC:
             R_CHI_DOT,
             R_GAM_DOT,
         ])
+        S = np.diag([
+            S_THRUST,
+            S_CHI_DOT,
+            S_GAM_DOT,
+        ])
 
         Q_CA = ca.DM(Q)
         R_CA = ca.DM(R)
+        S_CA = ca.DM(S)
+
 
         # --------------------------------------------------------------
         # Constraints
@@ -173,20 +187,33 @@ class GuidanceMPC:
         # Cost Function
         # --------------------------------------------------------------
         J = 0
-        # Stage costs
+        # Stage costs (tracking + control magnitude + optional control rate penalty)
         for k in range(N):
             xk = X[:, k]
             uk = U[:, k]
             Xref_rel_k = Xref_rel[:, k]
 
+            # State tracking
             e = xk - Xref_rel_k
             J += ca.mtimes([e.T, Q_CA, e]) + ca.mtimes([uk.T, R_CA, uk])
 
-        # Terminal cost
+            # Smooth-control penalty on input rate (u_k - u_{k-1})
+            if k > 0:
+                du = uk - U[:, k-1]
+                J += ca.mtimes([du.T, S_CA, du])
+
+        # Terminal state tracking cost
         eN = X[:, N] - Xref_rel[:, N]
         J += ca.mtimes([eN.T, Q_CA, eN])
 
+        # Additional terminal penalty on vertical speed (impact energy surrogate)
+        V_abs_N     = X[3, N] + x0[3]
+        gamma_abs_N = X[5, N] + x0[5]
+        v_z_final   = V_abs_N * ca.sin(gamma_abs_N)
+        J += W_VZ_FINAL * v_z_final**2
+
         opti.minimize(J)
+
 
         # --------------------------------------------------------------
         # Solver options

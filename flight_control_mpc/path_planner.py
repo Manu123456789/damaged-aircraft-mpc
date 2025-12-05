@@ -2,7 +2,7 @@ import numpy as np
 import casadi as ca
 import matplotlib.pyplot as plt
 from aircraft_model import AircraftModel
-
+from dataclasses import dataclass
 
 # --------------------------------------------------------------
 # Path Planner Cost Weights
@@ -27,6 +27,31 @@ N_ROLLOUT    = 20      # number of extra points along runway centerline
 
 D_ALIGN = 2000.0  # [m] length of desired straight-in segment
 
+@dataclass
+class Runway:
+    name: str
+    heading_deg: float
+    x: float   # north / x coordinate of threshold
+    y: float   # east / y coordinate of threshold
+
+def estimate_glide_range(aircraft: AircraftModel, glide_ratio: float = 10.0) -> float:
+    """Very rough reachable horizontal distance = altitude * glide_ratio."""
+    return aircraft.altitude * glide_ratio
+
+def select_best_runway(aircraft: AircraftModel, runways: list[Runway]) -> Runway | None:
+    """Pick closest runway within rough glide range."""
+    max_range = estimate_glide_range(aircraft)
+    feasible = []
+    for rw in runways:
+        dx = rw.x - aircraft.pos_north
+        dy = rw.y - aircraft.pos_east
+        dist = np.hypot(dx, dy)
+        if dist <= max_range:
+            feasible.append((dist, rw))
+    if not feasible:
+        return None
+    feasible.sort(key=lambda t: t[0])
+    return feasible[0][1]
 
 class GlidePathPlanner:
     def __init__(self, runway_heading_deg, N):

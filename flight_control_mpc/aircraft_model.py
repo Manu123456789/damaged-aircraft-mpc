@@ -42,6 +42,26 @@ class AircraftModel:
         self.vel_ms, self.chi, self.gamma = x
 
         self._update_linearized_kinematics()
+    def set_damage(self, thrust_eff: float = 1.0, yaw_eff: float = 1.0, climb_eff: float = 1.0):
+
+
+        """Set simple damage effectiveness factors (0–1) and update dynamics.
+
+        Parameters
+        ----------
+        thrust_eff : float
+            Effectiveness of the forward-acceleration channel.
+        yaw_eff : float
+            Effectiveness of the yaw / heading-rate channel.
+        climb_eff : float
+            Effectiveness of the climb / flight-path angle channel.
+        """
+        self.damage_thrust_eff = float(thrust_eff)
+        self.damage_yaw_eff    = float(yaw_eff)
+        self.damage_climb_eff  = float(climb_eff)
+
+        # Recompute linearization with new effectiveness factors
+        self._update_linearized_kinematics()
 
     def _update_linearized_kinematics(self):
         """ 
@@ -67,14 +87,29 @@ class AircraftModel:
             [0.0, 0.0, 0.0,  0.0,             0.0,                 0.0],
         ])
 
+        # Continuous-time input matrix before damage scaling
         Bc = np.array([
             [0.0, 0.0, 0.0],
             [0.0, 0.0, 0.0],
             [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 0.0],   # forward acceleration
+            [0.0, 1.0, 0.0],   # heading / yaw-rate surrogate
+            [0.0, 0.0, 1.0],   # flight-path / vertical channel
         ])
+
+        # Apply simple damage effectiveness factors to each control channel.
+        # Values are clipped to [0, 1] so that 'damage' cannot *increase* authority.
+        d_thrust = float(getattr(self, "damage_thrust_eff", 1.0))
+        d_yaw    = float(getattr(self, "damage_yaw_eff", 1.0))
+        d_climb  = float(getattr(self, "damage_climb_eff", 1.0))
+
+        d_thrust = max(0.0, min(1.0, d_thrust))
+        d_yaw    = max(0.0, min(1.0, d_yaw))
+        d_climb  = max(0.0, min(1.0, d_climb))
+
+        Bc[3, 0] *= d_thrust
+        Bc[4, 1] *= d_yaw
+        Bc[5, 2] *= d_climb
 
         # Discretize using Euler forward method
         self.Ad = np.eye(6) + Ac * dt

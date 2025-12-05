@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import matplotlib.pyplot as plt
 from aircraft_model import AircraftModel
-from path_planner import GlidePathPlanner
+from path_planner import GlidePathPlanner, Runway, select_best_runway
 from guidance_mpc import GuidanceMPC
 from plot import plot_guidance_overview
 
@@ -16,7 +16,8 @@ PLANNER_N = 50      # Number of waypoints in path planner
 # --------------------------------------------------------------
 # Environment and Airplane Initial Conditions
 # --------------------------------------------------------------
-RUNWAY_HEADING_DEG = 70                            # Runway heading in degrees
+
+#RUNWAY_HEADING_DEG = 70                            # Runway heading in degrees
 AIRPLANE_START_POS = (3000.0, -5000.0, 500.0)        # (x, y, h) in meters
 AIRPLANE_START_VEL_KT = 100.0                       # initial speed (kt)
 AIRPLANE_START_HEADING_DEG = 0.0                    # initial heading (deg)
@@ -32,6 +33,22 @@ aircraft = AircraftModel(pos_north=AIRPLANE_START_POS[0],
                             heading_deg=AIRPLANE_START_HEADING_DEG,
                             climb_angle_deg=0.0,
                             dt=MPC_DT)
+
+runways = [
+    Runway("RWY_A", heading_deg=70.0, x=0.0,     y=0.0),
+    Runway("RWY_B", heading_deg=90.0,  x=10000.0, y=-2000.0),
+    # etc...
+]
+
+chosen = select_best_runway(aircraft, runways)
+if chosen is None:
+    # fall back to crash-site mode (see below)
+    RUNWAY_HEADING_DEG = 70  
+else:
+    RUNWAY_HEADING_DEG = chosen.heading_deg
+    # shift coordinate frame so chosen runway is at origin for planner
+    # e.g., subtract (chosen.x, chosen.y) from aircraft state before planning
+
 planner = GlidePathPlanner(RUNWAY_HEADING_DEG, PLANNER_N)
 guidance_mpc = GuidanceMPC(planner, aircraft, MPC_N, MPC_DT)
 
@@ -59,9 +76,16 @@ h_sim_m.append(aircraft.altitude)
 vel_sim_ms.append(aircraft.vel_ms)
 heading_sim_deg.append(np.rad2deg(aircraft.chi))
 climb_angle_sim_deg.append(np.rad2deg(aircraft.gamma))
+damage_applied = False
 
 sim_step = 0
 while h_sim_m[-1] > 0.1:
+
+    # Apply damage at 400m altitude
+    if (not damage_applied) and (aircraft.altitude < 400.0):
+        # 70% thrust left, 50% yaw effectiveness, 30% climb authority
+        aircraft.set_damage(thrust_eff=0.1, yaw_eff=0.1, climb_eff=0.1)
+        damage_applied = True
 
     # 1) Solve MPC for control input and trajectory
     try:
