@@ -418,14 +418,14 @@ def plot_report_figures(
     # Global font / style for report-quality figures (bigger)
     # ==========================================================
     FS_BASE  = 16   # default text
-    FS_LABEL = 18   # axis labels
+    FS_LABEL = 20   # axis labels
     FS_TITLE = 20   # titles
     FS_LEG   = 14   # legend
     FS_TICK  = 14   # tick labels
 
     plt.rcParams.update({
         "font.size": FS_BASE,
-        "axes.titlesize": FS_TICK,
+        "axes.titlesize": FS_TITLE,
         "axes.labelsize": FS_LABEL,
         "xtick.labelsize": FS_TICK,
         "ytick.labelsize": FS_TICK,
