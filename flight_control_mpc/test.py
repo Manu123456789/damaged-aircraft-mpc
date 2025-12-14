@@ -11,16 +11,16 @@ from animation import animate_results
 # Controller Settings
 # --------------------------------------------------------------
 MPC_DT     = 1        # MPC time step (s)
-MPC_N      = 5        # MPC horizon length (steps)
+MPC_N      = 10        # MPC horizon length (steps)
 PLANNER_N  = 100      # Number of waypoints in the global planner polyline
 
 # --------------------------------------------------------------
 # Environment and Airplane Initial Conditions
 # --------------------------------------------------------------
 RUNWAY_HEADING_DEG          = 90                            # runway heading (deg)
-AIRPLANE_START_POS          = (200.0, -3000.0, 150.0)   # (N, E, h) in meters
+AIRPLANE_START_POS          = (-2000.0, -4000.0, 500.0)   # (N, E, h) in meters
 AIRPLANE_START_VEL_KT       = 80.0                          # initial speed (kt)
-AIRPLANE_START_HEADING_DEG  = 110.0                           # initial heading (deg)
+AIRPLANE_START_HEADING_DEG  = 170.0                           # initial heading (deg)
 
 # --------------------------------------------------------------
 # End of settings
