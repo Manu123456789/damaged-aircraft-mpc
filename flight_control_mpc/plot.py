@@ -4,8 +4,6 @@ from mpl_toolkits.mplot3d import Axes3D
 from matplotlib.patches import Polygon
 from matplotlib.gridspec import GridSpec
 
-
-
 def _runway_axis(runway_heading_deg: float):
     """
     Runway assumed at origin. Return:
@@ -381,422 +379,173 @@ def plot_altitude(
 
     return fig, ax
 
-def plot_guidance_overview(
-    x, y, h,
+def wrap_angle_deg(a):
+    """Wrap degrees to [-180, 180) for nicer plots."""
+    a = (np.asarray(a) + 180.0) % 360.0 - 180.0
+    return a
+
+def compute_runway_frame(x, y, runway_heading_deg):
+    """
+    Convert world (north=x, east=y) into runway-aligned coordinates:
+      s = along-runway axis (positive in runway heading direction)
+      d = cross-track (positive left of runway axis, right-hand rule)
+    """
+    psi = np.deg2rad(runway_heading_deg)
+    c, s = np.cos(psi), np.sin(psi)
+    x = np.asarray(x); y = np.asarray(y)
+    s_along =  c * x + s * y
+    d_cross = -s * x + c * y
+    return s_along, d_cross
+
+def plot_report_figures(
+    x_sim_m, y_sim_m, h_sim_m,
+    vel_sim_ms, heading_sim_deg, climb_angle_sim_deg,
+    u_thrust_mpc_m_s2, u_heading_rate_mpc_deg_s, u_climb_rate_mpc_deg_s,
+    x_planned, y_planned, h_planned,
     runway_heading_deg,
-    x_mpc, y_mpc, h_mpc,
-    u_thrust, u_heading, u_climb_rate,
-    vel_ms, heading_deg, climb_angle_deg,
+    out_dir="report_figs",
     glide_angle_deg=3.0,
-    runway_length=2000.0,
-    runway_width=200.0,
-    title_ground="Ground Track (Top-down View)",
-    title_alt="Altitude vs Distance From Runway",
+    runway_length_m=2000.0,
+    input_limits=None,
+    mpc_dt=1.0
 ):
-    """
-    Compact 2x2 overview:
-      [0,0] Ground track      [0,1] Altitude vs |s|
-      [1,0] Current state     [1,1] MPC inputs
-    """
-    # --- 0) Convert and prep inputs ---
-    vel_kt = float(vel_ms) * 1.94384
-    u = np.array([u_thrust, u_heading, u_climb_rate], dtype=float)
-
-    x      = np.asarray(x, dtype=float)
-    y      = np.asarray(y, dtype=float)
-    h      = np.asarray(h, dtype=float)
-    x_mpc  = np.asarray(x_mpc, dtype=float)
-    y_mpc  = np.asarray(y_mpc, dtype=float)
-    h_mpc  = np.asarray(h_mpc, dtype=float)
-
-    # --- 1) Project onto runway axis for altitude subplot ---
-    heading_rad, dx, dy = _runway_axis(runway_heading_deg)
-
-    s_raw = x * dx + y * dy
-    s_abs = np.abs(s_raw)
-
-    if x_mpc.size > 0 and y_mpc.size > 0:
-        s_raw_mpc = x_mpc * dx + y_mpc * dy
-        s_abs_mpc = np.abs(s_raw_mpc)
-    else:
-        s_abs_mpc = np.array([])
-
-    # --- 2) Create or reuse figure/subplots (2x2) ---
-    if not hasattr(plot_guidance_overview, "_fig"):
-        fig = plt.figure(figsize=(15, 8), num="guidance_overview")
-
-        gs = fig.add_gridspec(
-            2, 2,
-            height_ratios=[3.0, 1.0],  # top row ~2x height of bottom row
-            hspace=0.4,                # vertical spacing
-            wspace=0.3,                # horizontal spacing
-        )
-
-        ax_g     = fig.add_subplot(gs[0, 0])  # ground track (big)
-        ax_h     = fig.add_subplot(gs[0, 1])  # altitude (big)
-        ax_state = fig.add_subplot(gs[1, 0])  # current state (short)
-        ax_u     = fig.add_subplot(gs[1, 1])  # inputs (short)
-
-
-        # Store axes
-        plot_guidance_overview._fig     = fig
-        plot_guidance_overview._ax_g    = ax_g
-        plot_guidance_overview._ax_h    = ax_h
-        plot_guidance_overview._ax_u    = ax_u
-        plot_guidance_overview._ax_state = ax_state
-
-        # =====================================================
-        # TOP-LEFT: Ground track + runway + plane icon
-        # =====================================================
-        (line_plan_g,) = ax_g.plot(
-            [], [], "--", color="blue",
-            label="Long-horizon planned path", linewidth=2
-        )
-        (line_mpc_g,) = ax_g.plot(
-            [], [], "-", color="orange",
-            label="Short-horizon MPC path", linewidth=6, alpha=0.6
-        )
-
-        plot_guidance_overview._line_plan_g = line_plan_g
-        plot_guidance_overview._line_mpc_g  = line_mpc_g
-
-        # Runway polygon in (North x, East y)
-        L = runway_length
-        W = runway_width
-        corners_local = np.array(
-            [
-                [0.0, -W / 2],
-                [L,   -W / 2],
-                [L,    W / 2],
-                [0.0,  W / 2],
-            ]
-        )
-        u_loc = corners_local[:, 0]
-        v_loc = corners_local[:, 1]
-        x_rw = u_loc * dx - v_loc * dy   # North
-        y_rw = u_loc * dy + v_loc * dx   # East
-
-        ax_g.fill(
-            y_rw, x_rw,
-            facecolor="orange",
-            edgecolor="black",
-            alpha=0.7,
-            label="Runway",
-        )
-
-        ax_g.set_xlabel("y (East) [m]")
-        ax_g.set_ylabel("x (North) [m]")
-        ax_g.set_aspect("auto")
-        ax_g.grid(True, linestyle="--", alpha=0.3)
-        ax_g.legend(loc="best", fontsize=8)
-
-        # Ground track axis limits (based on current data + runway)
-        xs = [x_rw]
-        ys = [y_rw]
-        if x.size > 0 and y.size > 0:
-            xs.append(x)
-            ys.append(y)
-        if x_mpc.size > 0 and y_mpc.size > 0:
-            xs.append(x_mpc)
-            ys.append(y_mpc)
-
-        xs_all = np.concatenate(xs)
-        ys_all = np.concatenate(ys)
-        x_min, x_max = xs_all.min(), xs_all.max()
-        y_min, y_max = ys_all.min(), ys_all.max()
-        dx_range = x_max - x_min
-        dy_range = y_max - y_min
-
-        span_xy = max(dx_range, dy_range, 1.0)
-        pad = 0.2 * span_xy
-        min_pad = 0.2 * runway_length
-        pad = max(pad, min_pad)
-
-        ax_g.set_xlim(y_min - pad, y_max + pad)
-        ax_g.set_ylim(x_min - pad, x_max + pad)
-
-        # Simple plane shape (in local axes) to be rotated/translated
-        plane_body = np.array([
-            [0.0,   0.0],   # nose
-            [-1.0, -0.4],   # left wing
-            [-0.7,  0.0],   # fuselage center
-            [-1.0,  0.4],   # right wing
-        ])
-        plane_patch = Polygon(
-            [[0, 0], [0, 0], [0, 0]],
-            closed=True,
-            facecolor="red",
-            edgecolor="black"
-        )
-        ax_g.add_patch(plane_patch)
-
-        plot_guidance_overview._plane_body  = plane_body
-        plot_guidance_overview._plane_patch = plane_patch
-
-        # =====================================================
-        # TOP-RIGHT: Altitude vs distance |s|
-        # =====================================================
-        (line_gs_h,) = ax_h.plot(
-            [], [], "--", color="black", 
-            label=f"{glide_angle_deg:.1f}° glideslope", linewidth=1
-        )
-        (line_plan_h,) = ax_h.plot(
-            [], [], "--", color="blue",
-            label="Long-horizon planned path", linewidth=2
-        )
-        (line_mpc_h,) = ax_h.plot(
-            [], [], "-", color="orange",
-            label="Short-horizon MPC prediction", linewidth=6, alpha=0.6
-        )
-        (first_pt_marker,) = ax_h.plot(
-            [], [], "X", color="red", markersize=8, label="Current position"
-        )
-
-        plot_guidance_overview._line_gs_h         = line_gs_h
-        plot_guidance_overview._line_plan_h       = line_plan_h
-        plot_guidance_overview._line_mpc_h        = line_mpc_h
-        plot_guidance_overview._first_pt_marker   = first_pt_marker
-
-        ax_h.set_xlabel("Absolute distance from runway |s| [m]")
-        ax_h.set_ylabel("Altitude h [m]")
-        ax_h.grid(True, linestyle="--", alpha=0.3)
-        ax_h.legend(loc="best", fontsize=8)
-
-        # Precompute glide-slope envelope
-        gamma = np.deg2rad(glide_angle_deg)
-        tan_gamma = np.tan(gamma)
-
-        s_candidates = []
-        if s_abs.size > 0:
-            s_candidates.append(s_abs)
-        if s_abs_mpc.size > 0:
-            s_candidates.append(s_abs_mpc)
-
-        if s_candidates:
-            s_all = np.concatenate(s_candidates)
-            s_max_data = max(s_all.max(), 0.0)
-        else:
-            s_max_data = 1.0
-
-        pad_s = 0.3 * max(s_max_data, 1.0)
-        s_max_gs = s_max_data + pad_s
-        s_gs = np.linspace(0.0, s_max_gs, 200)
-        h_gs = s_gs * tan_gamma
-        line_gs_h.set_data(s_gs, h_gs)
-
-        h_candidates = [h_gs]
-        if h.size > 0:
-            h_candidates.append(h)
-        if h_mpc.size > 0:
-            h_candidates.append(h_mpc)
-        h_all = np.concatenate(h_candidates)
-        h_max = max(h_all.max(), 0.0)
-        pad_h = 0.3 * max(h_max, 1.0)
-
-        ax_h.set_xlim(0.0 - pad_s, s_max_gs)
-        ax_h.set_ylim(0.0 - pad_h, h_max + pad_h)
-        ax_h.invert_xaxis()  # runway at the right
-
-        # =====================================================
-        # BOTTOM-RIGHT: control inputs (bar chart)
-        # =====================================================
-        ax_u.set_title("MPC Inputs")
-        u_labels = ["Accel (m/s²)", "Heading rate (deg/s)", "Climb rate (deg/s)"]
-        y_pos = np.arange(len(u_labels))
-
-        bars = ax_u.barh(y_pos, u, color="gray")
-        plot_guidance_overview._bars_u   = bars
-        plot_guidance_overview._u_labels = u_labels
-
-        ax_u.set_yticks(y_pos)
-        ax_u.set_yticklabels(u_labels)
-        ax_u.set_xlabel("Magnitude")
-        ax_u.grid(axis="x", linestyle="--", alpha=0.5)
-
-        u_span = max(np.max(np.abs(u)), 1.0)
-        pad_u  = 0.2 * u_span
-        xlim_min = -u_span - pad_u
-        xlim_max =  u_span + pad_u
-        ax_u.set_xlim(xlim_min, xlim_max)
-        plot_guidance_overview._u_xlim = (xlim_min, xlim_max)
-        
-        # =====================================================
-        # BOTTOM-LEFT: current state summary (pretty card)
-        # =====================================================
-        ax_state.set_title("Current State", loc="left", fontsize=11, fontweight="bold")
-        ax_state.axis("off")
-
-        # Nice rounded box style
-        bbox_style = dict(
-            boxstyle="round,pad=0.6",
-            fc="#f7f7f7",     # light gray background
-            ec="#b0b0b0",     # border color
-            lw=1.0,
-        )
-
-        state_box = ax_state.text(
-            0.02, 0.98,
-            "",  # filled in later
-            transform=ax_state.transAxes,
-            ha="left",
-            va="top",
-            fontsize=10,
-            family="monospace",  # align numbers nicely
-            bbox=bbox_style,
-        )
-
-        plot_guidance_overview._state_box = state_box
-
-        fig.tight_layout()
-        # fig.subplots_adjust(top=0.5)  # give extra padding at the top
-
-
-    else:
-        fig       = plot_guidance_overview._fig
-        ax_g      = plot_guidance_overview._ax_g
-        ax_h      = plot_guidance_overview._ax_h
-        ax_u      = plot_guidance_overview._ax_u
-        ax_state  = plot_guidance_overview._ax_state
-
-    # Shared artists (first + subsequent calls)
-    line_plan_g = plot_guidance_overview._line_plan_g
-    line_mpc_g  = plot_guidance_overview._line_mpc_g
-    plane_body  = plot_guidance_overview._plane_body
-    plane_patch = plot_guidance_overview._plane_patch
-
-    line_gs_h       = plot_guidance_overview._line_gs_h
-    line_plan_h     = plot_guidance_overview._line_plan_h
-    line_mpc_h      = plot_guidance_overview._line_mpc_h
-    first_pt_marker = plot_guidance_overview._first_pt_marker
-
-    bars_u          = plot_guidance_overview._bars_u
-    xlim_min, xlim_max = plot_guidance_overview._u_xlim
-
-    state_box = plot_guidance_overview._state_box
-
-    # =========================
-    # UPDATE: ground track
-    # =========================
-    line_plan_g.set_data(y,     x)
-    line_mpc_g.set_data(y_mpc, x_mpc)
-    ax_g.set_title(title_ground)
-
-    # Plane icon at first point of path, oriented by heading
-    if x.size >= 1 and y.size >= 1 and heading_deg is not None:
-        x0 = x[0]  # North
-        y0 = y[0]  # East
-
-        h_deg = float(np.asarray(heading_deg).ravel()[0])  # 0 = North, 90 = East
-        theta = np.deg2rad(90.0 - h_deg)  # convert to matplotlib "x east, y north" frame
-
-        xlim = ax_g.get_xlim()
-        ylim = ax_g.get_ylim()
-        span_xy = max(abs(xlim[1] - xlim[0]), abs(ylim[1] - ylim[0]))
-        scale = 0.05 * span_xy
-
-        R = np.array([
-            [np.cos(theta), -np.sin(theta)],
-            [np.sin(theta),  np.cos(theta)],
-        ])
-        plane_pts = (plane_body @ R.T) * scale
-        plane_pts[:, 0] += y0
-        plane_pts[:, 1] += x0
-        plane_patch.set_xy(plane_pts)
-
-    # =========================
-    # UPDATE: altitude plot
-    # =========================
-    line_plan_h.set_data(s_abs,    h)
-    line_mpc_h.set_data(s_abs_mpc, h_mpc)
-    ax_h.set_title(title_alt)
-
-    if s_abs_mpc.size > 0 and h_mpc.size > 0:
-        s_path = s_abs_mpc
-        h_path = h_mpc
-    else:
-        s_path = s_abs
-        h_path = h
-
-    if s_path.size > 0 and h_path.size > 0:
-        s0 = s_path[0]
-        h0 = h_path[0]
-        first_pt_marker.set_data([s0], [h0])
-    else:
-        first_pt_marker.set_data([], [])
-
-    # =========================
-    # UPDATE: bar chart (inputs)
-    # =========================
-    for i, bar in enumerate(bars_u):
-        if i < u.size:
-            bar.set_width(u[i])
-        else:
-            bar.set_width(0.0)
-
-    ax_u.set_xlim(xlim_min, xlim_max)
-
-    # =========================
-    # UPDATE: current state text panel
-    # =========================
-    # Default strings
-    if x.size > 0 and y.size > 0 and h.size > 0:
-        x0 = float(x[0])
-        y0 = float(y[0])
-        h0 = float(h[0])
-        pos_str = f"x = {x0:7.1f} m   y = {y0:7.1f} m   h = {h0:7.1f} m"
-    else:
-        x0 = y0 = h0 = np.nan
-        pos_str = "Position:   —"
-
-    if heading_deg is not None:
-        hdg_str = f"{float(heading_deg):5.1f}°"
-    else:
-        hdg_str = "   —  "
-
-    if climb_angle_deg is not None:
-        climb_str = f"{float(climb_angle_deg):5.1f}°"
-    else:
-        climb_str = "   —  "
-
-    # Along-runway and cross-track metrics (if we have position)
-    dist_str = "Distance to RW:   —"
-    xtk_str  = "Cross-track:      —"
-    gs_err_str = "Glideslope err:   —"
-
-    if x.size > 0 and y.size > 0:
-        # Use the same runway axis you defined earlier: dx, dy
-        s0 = x0 * dx + y0 * dy              # signed along-runway distance
-        c0 = -x0 * dy + y0 * dx             # signed cross-track (left/right)
-        dist_km = abs(s0) / 1000.0
-
-        dist_str = f"Distance to RW: {dist_km:5.2f} km"
-        xtk_str  = f"Cross-track:   {c0:7.1f} m"
-
-        # Glideslope error (current altitude vs ideal glide)
-        gamma = np.deg2rad(glide_angle_deg)
-        h_gs0 = abs(s0) * np.tan(gamma)
-        gs_err = h0 - h_gs0
-        gs_err_str = f"Glideslope err: {gs_err:7.1f} m"
-
-    # Build pretty multi-line card
-    lines = [
-        f"Airspeed:    {vel_kt:6.1f} kt",
-        f"Heading:     {hdg_str}",
-        f"Climb angle: {climb_str}",
-        "",
-        pos_str,
-        dist_str,
-        xtk_str,
-        gs_err_str,
-    ]
-
-    state_box.set_text("\n".join(lines))
-
-    # =========================
-    # Redraw for animation
-    # =========================
-    fig.canvas.draw_idle()
-    fig.canvas.flush_events()
-
-    # Keep the same return type as before
-    return fig, (ax_g, ax_h, ax_u)
+    import os
+    os.makedirs(out_dir, exist_ok=True)
+
+    # ==========================================================
+    # Global font / style for report-quality figures (bigger)
+    # ==========================================================
+    FS_BASE  = 16   # default text
+    FS_LABEL = 18   # axis labels
+    FS_TITLE = 20   # titles
+    FS_LEG   = 14   # legend
+    FS_TICK  = 14   # tick labels
+
+    plt.rcParams.update({
+        "font.size": FS_BASE,
+        "axes.titlesize": FS_TICK,
+        "axes.labelsize": FS_LABEL,
+        "xtick.labelsize": FS_TICK,
+        "ytick.labelsize": FS_TICK,
+        "legend.fontsize": FS_LEG,
+        "legend.title_fontsize": FS_LEG,
+        "figure.titlesize": FS_TITLE,
+        "lines.linewidth": 2.5,
+    })
+
+    # Convert to numpy
+    x_sim = np.asarray(x_sim_m, dtype=float)
+    y_sim = np.asarray(y_sim_m, dtype=float)
+    h_sim = np.asarray(h_sim_m, dtype=float)
+    V_sim = np.asarray(vel_sim_ms, dtype=float)
+    chi_sim = wrap_angle_deg(heading_sim_deg)
+    gam_sim = np.asarray(climb_angle_sim_deg, dtype=float)
+
+    uT = np.asarray(u_thrust_mpc_m_s2, dtype=float)
+    uChi = np.asarray(u_heading_rate_mpc_deg_s, dtype=float)
+    uGam = np.asarray(u_climb_rate_mpc_deg_s, dtype=float)
+
+    t = np.arange(len(uT), dtype=float) * float(mpc_dt)  # inputs exist for each MPC step
+
+    # Use the last planned path for a clean reference overlay
+    x_ref = np.asarray(x_planned[-1], dtype=float)
+    y_ref = np.asarray(y_planned[-1], dtype=float)
+    h_ref = np.asarray(h_planned[-1], dtype=float)
+
+    # Runway axis line for plotting
+    psi = np.deg2rad(runway_heading_deg)
+    c, s = np.cos(psi), np.sin(psi)
+    L = float(runway_length_m)
+    runway_x = np.array([0.0, L * c])
+    runway_y = np.array([0.0, L * s])
+
+    # ---- Figure 1: Ground track (top-down) ----
+    plt.figure(figsize=(9, 6))
+    plt.plot(x_sim, y_sim, label="Simulated trajectory")
+    plt.plot(x_ref, y_ref, "--", label="Planned reference (final solve)")
+    plt.plot(runway_x, runway_y, label="Runway axis")
+    plt.scatter([0.0], [0.0], marker="x", s=80, label="Runway threshold")
+    plt.axis("equal")
+    plt.xlabel("North x (m)")
+    plt.ylabel("East y (m)")
+    plt.title("Ground Track (Top-Down)")
+    plt.grid(True)
+    plt.legend(frameon=True)
+    plt.tight_layout()
+    plt.savefig(os.path.join(out_dir, "01_ground_track.png"), dpi=300)
+
+    # ---- Figure 2: Altitude vs along-runway distance ----
+    s_sim, d_sim = compute_runway_frame(x_sim, y_sim, runway_heading_deg)
+    s_ref, d_ref = compute_runway_frame(x_ref, y_ref, runway_heading_deg)
+
+    # Use absolute along-runway distance like you used in your plot function (optional)
+    s_abs = np.abs(np.asarray(s_sim, dtype=float))
+
+    # Glideslope reference line: h = tan(gamma_gs) * |s|
+    gs = np.tan(np.deg2rad(glide_angle_deg))
+    h_gs = gs * s_abs
+
+    plt.figure(figsize=(9, 6))
+    plt.plot(s_abs, h_sim, label="Simulated altitude")
+    plt.plot(s_abs, h_gs, "--", label=f"{glide_angle_deg:.1f} deg glideslope")
+    plt.xlabel("|Along-runway distance| |s| (m)")
+    plt.ylabel("Altitude h (m)")
+    plt.title("Altitude vs Distance from Runway")
+    plt.grid(True)
+    plt.legend(frameon=True)
+    plt.tight_layout()
+    plt.savefig(os.path.join(out_dir, "02_altitude_vs_distance.png"), dpi=300)
+
+    # ---- Figure 3: Cross-track error vs time ----
+    plt.figure(figsize=(9, 6))
+    plt.plot(np.arange(len(s_sim), dtype=float) * float(mpc_dt), d_sim, label="Cross-track d (m)")
+    plt.xlabel("Time (s)")
+    plt.ylabel("Cross-track error d (m)")
+    plt.title("Cross-Track Error vs Time")
+    plt.grid(True)
+    plt.legend(frameon=True)
+    plt.tight_layout()
+    plt.savefig(os.path.join(out_dir, "03_cross_track_vs_time.png"), dpi=300)
+
+    # ---- Figure 4: States vs time ----
+    t_state = np.arange(len(x_sim), dtype=float) * float(mpc_dt)
+    plt.figure(figsize=(9, 6))
+    plt.plot(t_state, V_sim, label="Airspeed V (m/s)")
+    plt.plot(t_state, chi_sim, label="Heading χ (deg)")
+    plt.plot(t_state, gam_sim, label="Flight-path γ (deg)")
+    plt.xlabel("Time (s)")
+    plt.title("States vs Time")
+    plt.grid(True)
+    plt.legend(frameon=True)
+    plt.tight_layout()
+    plt.savefig(os.path.join(out_dir, "04_states_vs_time.png"), dpi=300)
+
+    # ---- Figure 5: Inputs vs time ----
+    plt.figure(figsize=(9, 6))
+    plt.plot(t, uT, label="uT (m/s²)")
+    plt.plot(t, uChi, label="χ̇ command (deg/s)")
+    plt.plot(t, uGam, label="γ̇ command (deg/s)")
+    plt.xlabel("Time (s)")
+    plt.title("MPC Guidance Inputs vs Time")
+    plt.grid(True)
+
+    # Optional constraint bands if you provide them
+    if input_limits is not None:
+        if "uT" in input_limits:
+            lo, hi = input_limits["uT"]
+            plt.axhline(lo, linestyle="--")
+            plt.axhline(hi, linestyle="--")
+        if "chi_dot" in input_limits:
+            lo, hi = input_limits["chi_dot"]
+            plt.axhline(lo, linestyle="--")
+            plt.axhline(hi, linestyle="--")
+        if "gamma_dot" in input_limits:
+            lo, hi = input_limits["gamma_dot"]
+            plt.axhline(lo, linestyle="--")
+            plt.axhline(hi, linestyle="--")
+
+    plt.legend(frameon=True)
+    plt.tight_layout()
+    plt.savefig(os.path.join(out_dir, "05_inputs_vs_time.png"), dpi=300)
+
+    print(f"[Saved] Report figures to: {out_dir}/")
