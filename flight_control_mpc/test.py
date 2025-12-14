@@ -1,58 +1,68 @@
-import matplotlib.pyplot as plt
 import numpy as np
 import matplotlib.pyplot as plt
+
 from aircraft_model import AircraftModel
 from path_planner import GlidePathPlanner
 from guidance_mpc import GuidanceMPC
-from plot import plot_guidance_overview
+from plot import plot_report_figures
+from animation import animate_results
 
 # --------------------------------------------------------------
 # Controller Settings
 # --------------------------------------------------------------
-MPC_DT = 1          # MPC time step (s)
-MPC_N = 10          # MPC prediction horizon step
-PLANNER_N = 50      # Number of waypoints in path planner
+MPC_DT     = 1        # MPC time step (s)
+MPC_N      = 5        # MPC horizon length (steps)
+PLANNER_N  = 100      # Number of waypoints in the global planner polyline
 
 # --------------------------------------------------------------
 # Environment and Airplane Initial Conditions
 # --------------------------------------------------------------
-RUNWAY_HEADING_DEG = 70                            # Runway heading in degrees
-AIRPLANE_START_POS = (3000.0, -5000.0, 500.0)        # (x, y, h) in meters
-AIRPLANE_START_VEL_KT = 100.0                       # initial speed (kt)
-AIRPLANE_START_HEADING_DEG = 0.0                    # initial heading (deg)
+RUNWAY_HEADING_DEG          = 90                            # runway heading (deg)
+AIRPLANE_START_POS          = (200.0, -3000.0, 150.0)   # (N, E, h) in meters
+AIRPLANE_START_VEL_KT       = 80.0                          # initial speed (kt)
+AIRPLANE_START_HEADING_DEG  = 110.0                           # initial heading (deg)
 
 # --------------------------------------------------------------
 # End of settings
 # --------------------------------------------------------------
 
-aircraft = AircraftModel(pos_north=AIRPLANE_START_POS[0],
-                            pos_east=AIRPLANE_START_POS[1],
-                            altitude=AIRPLANE_START_POS[2],
-                            vel_kt=AIRPLANE_START_VEL_KT,
-                            heading_deg=AIRPLANE_START_HEADING_DEG,
-                            climb_angle_deg=0.0,
-                            dt=MPC_DT)
+# --------------------------------------------------------------
+# Instantiate model + planner + MPC
+# --------------------------------------------------------------
+aircraft = AircraftModel(
+    pos_north=AIRPLANE_START_POS[0],
+    pos_east=AIRPLANE_START_POS[1],
+    altitude=AIRPLANE_START_POS[2],
+    vel_kt=AIRPLANE_START_VEL_KT,
+    heading_deg=AIRPLANE_START_HEADING_DEG,
+    climb_angle_deg=0.0,
+    dt=MPC_DT,
+)
+
 planner = GlidePathPlanner(RUNWAY_HEADING_DEG, PLANNER_N)
 guidance_mpc = GuidanceMPC(planner, aircraft, MPC_N, MPC_DT)
 
-x_planned = []
-y_planned = []
-h_planned = []
+# --------------------------------------------------------------
+# Logging buffers (for plotting / analysis)
+# --------------------------------------------------------------
+# Planned path (polyline) at each sim step (store full arrays per step)
+x_planned, y_planned, h_planned = [], [], []
 
-x_mpc = []
-y_mpc = []
-h_mpc = []
+# MPC predicted trajectory at each sim step (store horizon arrays per step)
+x_mpc, y_mpc, h_mpc = [], [], []
 
-u_thrust_mpc_m_s2 = []
-u_heading_rate_mpc_deg_s = []
-u_climb_rate_mpc_deg_s = []
+# Applied control inputs (first input of MPC solution)
+u_thrust_mpc_m_s2       = []  # accel command (m/s^2)
+u_heading_rate_mpc_deg_s = [] # chi_dot (deg/s)
+u_climb_rate_mpc_deg_s   = [] # gamma_dot (deg/s)
 
-x_sim_m = []
-y_sim_m = []
-h_sim_m = []
+# Closed-loop simulated state history (absolute)
+x_sim_m, y_sim_m, h_sim_m = [], [], []
 vel_sim_ms = []
 heading_sim_deg = []
 climb_angle_sim_deg = []
+
+# Seed initial state
 x_sim_m.append(aircraft.pos_north)
 y_sim_m.append(aircraft.pos_east)
 h_sim_m.append(aircraft.altitude)
@@ -60,56 +70,96 @@ vel_sim_ms.append(aircraft.vel_ms)
 heading_sim_deg.append(np.rad2deg(aircraft.chi))
 climb_angle_sim_deg.append(np.rad2deg(aircraft.gamma))
 
+# --------------------------------------------------------------
+# Simulation loop
+# --------------------------------------------------------------
 sim_step = 0
+
+# Event-triggered replanning flag
+replan = True
+cached_waypoints = None
+
+# Run until we reach (approximately) ground level
 while h_sim_m[-1] > 0.1:
 
-    # 1) Solve MPC for control input and trajectory
+    # 1) Build flight path reference for MPC (if needed)
+    if replan or cached_waypoints is None:
+        Xref_abs, cached_waypoints = guidance_mpc.build_local_reference(
+            aircraft, waypoints=None
+        )
+        replan = False
+        guidance_mpc.reset_replan_memory()
+    else:
+        Xref_abs, _ = guidance_mpc.build_local_reference(
+            aircraft, waypoints=cached_waypoints
+        )
+
+    # 2) Solve MPC for control input
     try:
         state_vector = aircraft.get_state_vector()
-        u0, X_pred, U_pred, waypoints = guidance_mpc.solve_for_control_input(aircraft)
+        u0, X_pred, U_pred, _, replan = guidance_mpc.solve_for_control_input(aircraft, cached_waypoints, Xref_abs)
+
     except RuntimeError as e:
         print("MPC failed")
         break
 
-    # 2) Store control inputs
+    # 3) Log applied control inputs
     u_thrust_mpc_m_s2.append(u0[0])
     u_heading_rate_mpc_deg_s.append(np.rad2deg(u0[1]))
-    u_climb_rate_mpc_deg_s.append(np.rad2deg(u0[2]))    
+    u_climb_rate_mpc_deg_s.append(np.rad2deg(u0[2]))
 
-    # 3) Store planned waypoints
-    x_planned.append(waypoints[:, 0])
-    y_planned.append(waypoints[:, 1])
-    h_planned.append(waypoints[:, 2])
+    # 4) Log the current global plan (for visualization)
+    x_planned.append(cached_waypoints[:, 0])
+    y_planned.append(cached_waypoints[:, 1])
+    h_planned.append(cached_waypoints[:, 2])
 
-    # 4) Store MPC predicted trajectory
-    x_mpc.append(X_pred[0, :])   # N
-    y_mpc.append(X_pred[1, :])   # E
-    h_mpc.append(X_pred[2, :])   # h
+    # 5) Log MPC predicted horizon trajectory (for visualization)
+    x_mpc.append(X_pred[0, :])  # north
+    y_mpc.append(X_pred[1, :])  # east
+    h_mpc.append(X_pred[2, :])  # altitude
 
-    # 5) Store simulated state (next time step)
-    x_sim_m.append(X_pred[0, 1])
-    y_sim_m.append(X_pred[1, 1])
-    h_sim_m.append(X_pred[2, 1])
-    vel_sim_ms.append(X_pred[3, 1])
-    heading_sim_deg.append(np.rad2deg(X_pred[4, 1]))
-    climb_angle_sim_deg.append(np.rad2deg(X_pred[5, 1]))
+    # 6) Advance simulation by one step
+    x_next = X_pred[:, 1]  # next state in the predicted trajectory
 
-    # 6) Update aircraft state
-    aircraft.update_from_vector(X_pred[:,1])
+    x_sim_m.append(x_next[0])
+    y_sim_m.append(x_next[1])
+    h_sim_m.append(x_next[2])
+    vel_sim_ms.append(x_next[3])
+    heading_sim_deg.append(np.rad2deg(x_next[4]))
+    climb_angle_sim_deg.append(np.rad2deg(x_next[5]))
 
-    sim_step = sim_step + 1
 
+    # Apply the control input and update aircraft state
+    aircraft.step(u0)
+    sim_step += 1
+
+
+# --------------------------------------------------------------
+# Plot results
+# --------------------------------------------------------------
+plot_report_figures(
+    x_sim_m, y_sim_m, h_sim_m,
+    vel_sim_ms, heading_sim_deg, climb_angle_sim_deg,
+    u_thrust_mpc_m_s2, u_heading_rate_mpc_deg_s, u_climb_rate_mpc_deg_s,
+    x_planned, y_planned, h_planned,
+    runway_heading_deg=RUNWAY_HEADING_DEG,
+    out_dir="report_figs",
+    glide_angle_deg=3.0,
+    runway_length_m=2000.0,
+    input_limits=None,
+    mpc_dt = MPC_DT
+)
 
 # --------------------------------------------------------------
 # Play Simulation Results
 # --------------------------------------------------------------
-
 plt.ion()
 replay_step = 0
 
 while True:
 
-    plot_guidance_overview(
+    animate_results(
+        replay_step,
         x_planned[replay_step],
         y_planned[replay_step],
         h_planned[replay_step],
