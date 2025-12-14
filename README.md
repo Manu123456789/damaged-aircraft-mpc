@@ -45,7 +45,7 @@ $$
 The speed, heading, and climb angle evolve according to **high-level guidance inputs**:
 
 $$
-\dot{V} = u_T - g\sin\gamma,\qquad
+\dot{V} = u_accel,\qquad
 \dot{\chi} = u_{\dot{\chi}},\qquad
 \dot{\gamma} = u_{\dot{\gamma}}
 $$
@@ -54,10 +54,8 @@ Where:
 - $u_T$ — commanded longitudinal acceleration  
 - $u_{\dot{\chi}}$ — commanded heading rate  
 - $u_{\dot{\gamma}}$ — commanded climb-angle rate  
-- $g$ — gravitational acceleration (9.81 m/s²)
 
 These inputs are assumed to be tracked by an **ideal inner-loop autopilot**, allowing the MPC to operate purely at the guidance level.
-
 
 ### Linearization for MPC
 
