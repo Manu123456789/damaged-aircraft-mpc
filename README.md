@@ -45,13 +45,13 @@ $$
 The speed, heading, and climb angle evolve according to **high-level guidance inputs**:
 
 $$
-\dot{V} = u_accel,\qquad
+\dot{V} = u_{accel},\qquad
 \dot{\chi} = u_{\dot{\chi}},\qquad
 \dot{\gamma} = u_{\dot{\gamma}}
 $$
 
 Where:
-- $u_T$ — commanded longitudinal acceleration  
+- $u_{accel}$ — commanded longitudinal acceleration  
 - $u_{\dot{\chi}}$ — commanded heading rate  
 - $u_{\dot{\gamma}}$ — commanded climb-angle rate  
 
@@ -93,6 +93,7 @@ This simplification allows us to study **navigation** and **trajectory planning*
 - Generates a smooth runway-aligned 3D trajectory
 - Horizon extends all the way to touchdown
 - Produces a full-descent reference path
+- Only replan when Short-Horizon MPC deemed the planned path is infeasible to track
 
 ### Short-Horizon MPC
 - Fully **convex**
@@ -102,6 +103,7 @@ This simplification allows us to study **navigation** and **trajectory planning*
   - Limited acceleration
   - Limited turn rate
   - Limited climb/descent rate
+- Determines if the path is infeasible to follow
 - Outputs high-level rate commands:
 
 $$
