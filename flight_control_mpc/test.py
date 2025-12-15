@@ -1,0 +1,282 @@
+import numpy as np
+import matplotlib.pyplot as plt
+
+from aircraft_model import AircraftModel
+from path_planner import GlidePathPlanner
+from guidance_mpc import GuidanceMPC
+from plot import plot_report_figures
+from animation import animate_results
+
+# --------------------------------------------------------------
+# Controller Settings
+# --------------------------------------------------------------
+MPC_DT     = 1        # MPC time step (s)
+MPC_N      = 10        # MPC horizon length (steps)
+PLANNER_N  = 100      # Number of waypoints in the global planner polyline
+
+# --------------------------------------------------------------
+# Environment and Airplane Initial Conditions
+# --------------------------------------------------------------
+RUNWAY_HEADING_DEG          = 90                            # runway heading (deg)
+AIRPLANE_START_POS          = (-2000.0, -4000.0, 500.0)   # (N, E, h) in meters
+AIRPLANE_START_VEL_KT       = 80.0                          # initial speed (kt)
+AIRPLANE_START_HEADING_DEG  = 170                           # initial heading (deg)
+
+# --------------------------------------------------------------
+# End of settings
+# --------------------------------------------------------------
+
+# --------------------------------------------------------------
+# Instantiate model + planner + MPC
+# --------------------------------------------------------------
+aircraft = AircraftModel(
+    pos_north=AIRPLANE_START_POS[0],
+    pos_east=AIRPLANE_START_POS[1],
+    altitude=AIRPLANE_START_POS[2],
+    vel_kt=AIRPLANE_START_VEL_KT,
+    heading_deg=AIRPLANE_START_HEADING_DEG,
+    climb_angle_deg=0.0,
+    dt=MPC_DT,
+)
+
+planner = GlidePathPlanner(RUNWAY_HEADING_DEG, PLANNER_N)
+guidance_mpc = GuidanceMPC(planner, aircraft, MPC_N, MPC_DT, mode="nominal")
+crash_mpc    = GuidanceMPC(planner, aircraft, MPC_N, MPC_DT, mode="crash")
+# --------------------------------------------------------------
+# Logging buffers (for plotting / analysis)
+# --------------------------------------------------------------
+# Planned path (polyline) at each sim step (store full arrays per step)
+x_planned, y_planned, h_planned = [], [], []
+
+# MPC predicted trajectory at each sim step (store horizon arrays per step)
+x_mpc, y_mpc, h_mpc = [], [], []
+
+# Applied control inputs (first input of MPC solution)
+u_thrust_mpc_m_s2       = []  # accel command (m/s^2)
+u_heading_rate_mpc_deg_s = [] # chi_dot (deg/s)
+u_climb_rate_mpc_deg_s   = [] # gamma_dot (deg/s)
+
+# Closed-loop simulated state history (absolute)
+x_sim_m, y_sim_m, h_sim_m = [], [], []
+vel_sim_ms = []
+heading_sim_deg = []
+climb_angle_sim_deg = []
+
+# Seed initial state
+x_sim_m.append(aircraft.pos_north)
+y_sim_m.append(aircraft.pos_east)
+h_sim_m.append(aircraft.altitude)
+vel_sim_ms.append(aircraft.vel_ms)
+heading_sim_deg.append(np.rad2deg(aircraft.chi))
+climb_angle_sim_deg.append(np.rad2deg(aircraft.gamma))
+
+# --------------------------------------------------------------
+# Simulation loop
+# --------------------------------------------------------------
+sim_step = 0
+
+# Event-triggered replanning flag
+replan = True
+cached_waypoints = None
+
+replan_flags = []          # one bool per MPC step
+replan_times = []          # timestamps (seconds)
+replan_counts = 0
+t_step = 0                # 1 step = 1 second if mpc_dt=1
+
+DAMAGE_TIME_S = 60
+damage_applied = False
+crash_mode = False
+no_land_zones = [
+    # directly below aircraft (prevents immediate spiral-down landing)
+    {"cx": -1016.778, "cy": -2892.074, "a": 1000.0, "b": 1000.0},
+
+    # additional example zones
+    {"cx": 1179.912, "cy": -2383.267, "a": 600.0, "b": 600.0},
+    {"cx":  500.0, "cy": -1000.0, "a": 500.0, "b": 500.0},
+    {"cx":  800.0, "cy": -1500.0, "a": 1000.0, "b": 1000.0},
+]
+crash_flags = []
+aircraft.no_land_zones = no_land_zones
+
+# store the nominal plan right before damage for overlay
+nominal_plan_snapshot = None
+
+
+# Initialize logs
+x_sim_m = [float(aircraft.pos_north)]
+y_sim_m = [float(aircraft.pos_east)]
+h_sim_m = [float(aircraft.altitude)]
+vel_sim_ms = [float(aircraft.vel_ms)]
+heading_sim_deg = [float(np.rad2deg(aircraft.chi))]
+climb_angle_sim_deg = [float(np.rad2deg(aircraft.gamma))]
+
+u_thrust_mpc_m_s2 = []
+u_heading_rate_mpc_deg_s = []
+u_climb_rate_mpc_deg_s = []
+
+x_planned, y_planned, h_planned = [], [], []
+x_mpc, y_mpc, h_mpc = [], [], []
+
+# Run until we reach ground level
+while h_sim_m[-1] > 0.1:
+    if (not damage_applied) and (t_step >= DAMAGE_TIME_S):
+        gamma_max_deg=-5.0
+        aircraft.apply_damage(gamma_max_deg, gamma_min_deg=-30.0)
+        print(f"[Damage] Activating damage at t={t_step}s: gamma_max={gamma_max_deg}")
+        damage_applied = True
+
+        # Force an immediate replan under the new envelope
+        replan = True
+        cached_waypoints = None
+
+        # Optional: snapshot last planned path for overlay
+        if len(x_planned) > 0:
+            nominal_plan_snapshot = (x_planned[-1].copy(), y_planned[-1].copy(), h_planned[-1].copy())
+
+    mpc = crash_mpc if crash_mode else guidance_mpc
+    #u0, X_pred, U_pred, _, replan = mpc.solve_for_control_input(...)
+
+    # 1) Build flight path reference for MPC (replan only when requested)
+    if replan or cached_waypoints is None:
+        Xref_abs, cached_waypoints = mpc.build_local_reference(
+            aircraft, waypoints=None
+        )
+        mpc.reset_replan_memory()
+        replan_counts += 1
+        replan = False
+    else:
+        Xref_abs, _ = mpc.build_local_reference(
+            aircraft, waypoints=cached_waypoints
+        )
+    # --- after you compute cached_waypoints (i.e., after build_local_reference) ---
+    if damage_applied and (not crash_mode) and (cached_waypoints is not None):
+        # Remaining distance along planned polyline (from current projected position)
+        p = np.array([aircraft.pos_north, aircraft.pos_east, aircraft.altitude], dtype=float)
+
+        # Use the SAME projection routine the MPC uses (consistent geometry)
+        s0, _, _ = mpc._project_to_polyline_s(p, cached_waypoints, use_altitude=False)
+
+        L_path = planner.remaining_length_to_threshold_xy(cached_waypoints, s0)
+        R_max = planner.max_horizontal_range(aircraft.altitude, aircraft.gamma_max_rad)
+
+        if L_path > R_max:
+            print(f"[Damage] Cannot reach runway under gamma_max={np.rad2deg(aircraft.gamma_max_rad):.1f}deg. "
+                f"path={L_path:.0f}m > range={R_max:.0f}m -> switching to CRASH MPC.")
+            crash_mode = True
+            replan = True
+            cached_waypoints = None
+            continue
+
+    if replan_counts >= 20 and (not crash_mode):
+        print("[Guidance] Too many replans -> switching to CRASH MPC.")
+        crash_mode = True
+        replan = True
+        cached_waypoints = None
+        replan_counts = 0
+        continue
+
+    if replan_counts >= 20 and crash_mode:
+        print("[Crash] Too many replans in crash mode -> terminating sim.")
+        break
+
+
+
+    # 2b) Else, solve nominal MPC for control input
+    try:
+        u0, X_pred, U_pred, _, replan = mpc.solve_for_control_input(
+            aircraft, cached_waypoints, Xref_abs
+        )
+    except RuntimeError:
+        print("MPC failed")
+        break
+
+    # 3) Log replan flag (this step)
+    replan_flags.append(bool(replan))
+    replan_times.append(t_step)
+    crash_flags.append(bool(crash_mode))
+    t_step += 1
+
+
+    # 4) Log applied control inputs
+    u_thrust_mpc_m_s2.append(float(u0[0]))
+    u_heading_rate_mpc_deg_s.append(float(np.rad2deg(u0[1])))
+    u_climb_rate_mpc_deg_s.append(float(np.rad2deg(u0[2])))
+
+    # 5) Log the current global plan (for visualization)
+    x_planned.append(np.asarray(cached_waypoints[:, 0], dtype=float).copy())
+    y_planned.append(np.asarray(cached_waypoints[:, 1], dtype=float).copy())
+    h_planned.append(np.asarray(cached_waypoints[:, 2], dtype=float).copy())
+
+    # 6) Log MPC predicted horizon trajectory (for visualization)
+    x_mpc.append(np.asarray(X_pred[0, :], dtype=float).copy())  # north
+    y_mpc.append(np.asarray(X_pred[1, :], dtype=float).copy())  # east
+    h_mpc.append(np.asarray(X_pred[2, :], dtype=float).copy())  # altitude
+
+    # 7) Advance TRUE simulation by one step
+    aircraft.step(u0)
+    sim_step += 1
+
+    # 8) Log TRUE simulated state from aircraft (NOT from X_pred)
+    x_sim_m.append(float(aircraft.pos_north))
+    y_sim_m.append(float(aircraft.pos_east))
+    h_sim_m.append(float(aircraft.altitude))
+    vel_sim_ms.append(float(aircraft.vel_ms))
+    heading_sim_deg.append(float(np.rad2deg(aircraft.chi)))
+    climb_angle_sim_deg.append(float(np.rad2deg(aircraft.gamma)))
+
+
+# --------------------------------------------------------------
+# Plot results
+# --------------------------------------------------------------
+plot_report_figures(
+    x_sim_m, y_sim_m, h_sim_m,
+    vel_sim_ms, heading_sim_deg, climb_angle_sim_deg,
+    u_thrust_mpc_m_s2, u_heading_rate_mpc_deg_s, u_climb_rate_mpc_deg_s,
+    x_planned, y_planned, h_planned,
+    runway_heading_deg=RUNWAY_HEADING_DEG,
+    out_dir="report_figs",
+    glide_angle_deg=3.0,
+    runway_length_m=2000.0,
+    input_limits=None,
+    mpc_dt = MPC_DT,
+    replan_flags=replan_flags,
+    replan_times=replan_times,   # optional; you can omit this
+)
+
+# --------------------------------------------------------------
+# Play Simulation Results
+# --------------------------------------------------------------
+plt.ion()
+
+for replay_step in range(len(x_planned)):
+    zones_to_draw = no_land_zones if crash_flags[replay_step] else None
+    animate_results(
+        replay_step,
+        x_planned[replay_step],
+        y_planned[replay_step],
+        h_planned[replay_step],
+        RUNWAY_HEADING_DEG,
+        x_mpc=x_mpc[replay_step],
+        y_mpc=y_mpc[replay_step],
+        h_mpc=h_mpc[replay_step],
+        u_thrust=u_thrust_mpc_m_s2[replay_step],
+        u_heading=u_heading_rate_mpc_deg_s[replay_step],
+        u_climb_rate=u_climb_rate_mpc_deg_s[replay_step],
+        vel_ms=vel_sim_ms[replay_step],
+        heading_deg=heading_sim_deg[replay_step],
+        climb_angle_deg=climb_angle_sim_deg[replay_step],
+        no_land_zones=zones_to_draw,
+    )
+
+    if replay_step == 0:
+        plt.pause(3.0)
+
+    replay_step = replay_step + 1
+    if replay_step >= len(x_planned):
+        plt.pause(3.0)
+        replay_step = 0
+
+    plt.pause(0.1)
+plt.ioff()
+plt.show(block=False)
