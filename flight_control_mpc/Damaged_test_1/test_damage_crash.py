@@ -1,9 +1,9 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-from aircraft_model import AircraftModel
-from path_planner import GlidePathPlanner
-from guidance_mpc import GuidanceMPC
+from aircraft_model_damaged import AircraftModel
+from path_planner_crash import GlidePathPlanner, CrashSitePlanner, polyline_length, max_reachable_ground_range
+from guidance_mpc_damage_crash import GuidanceMPC
 from plot import plot_report_figures
 from animation import animate_results
 
@@ -13,6 +13,22 @@ from animation import animate_results
 MPC_DT     = 1        # MPC time step (s)
 MPC_N      = 10        # MPC horizon length (steps)
 PLANNER_N  = 100      # Number of waypoints in the global planner polyline
+
+# --------------------------------------------------------------
+# Damage / Crash-landing Settings
+# --------------------------------------------------------------
+DAMAGE_ACTIVE = True
+DAMAGE_GAMMA_MAX_DEG = -3.0   # gamma upper bound when damaged (deg); must be < 0 to force descent
+
+# If the planned runway path length exceeds this reachable range under DAMAGE_GAMMA_MAX_DEG,
+# switch to crash MPC and crash-site planner.
+REACHABILITY_SAFETY_FACTOR = 0.9
+
+# No-land zones (2D ellipses in N/E meters)
+NO_LAND_ELLIPSES = [
+    {"cx": -500.0, "cy": -800.0, "a": 400.0, "b": 250.0, "angle_deg": 20.0},
+    {"cx": -1200.0, "cy": -1500.0, "a": 500.0, "b": 300.0, "angle_deg": -35.0},
+]
 
 # --------------------------------------------------------------
 # Environment and Airplane Initial Conditions
@@ -39,9 +55,30 @@ aircraft = AircraftModel(
     dt=MPC_DT,
 )
 
+# Activate damage (gamma upper bound) if requested
+if DAMAGE_ACTIVE:
+    aircraft.set_damage(True, gamma_max_damage_deg=DAMAGE_GAMMA_MAX_DEG)
+
+gamma_max_damage_rad = np.deg2rad(DAMAGE_GAMMA_MAX_DEG)
+aircraft.gamma = min(aircraft.gamma, gamma_max_damage_rad) # enforce initial climb angle within damage limits
 planner = GlidePathPlanner(RUNWAY_HEADING_DEG, PLANNER_N)
-guidance_mpc = GuidanceMPC(planner, aircraft, MPC_N, MPC_DT, mode="nominal")
-crash_mpc    = GuidanceMPC(planner, aircraft, MPC_N, MPC_DT, mode="crash")
+guidance_mpc = GuidanceMPC(
+    planner,
+    aircraft,
+    MPC_N,
+    MPC_DT,
+    gamma_min_rad=np.deg2rad(-30.0),
+    gamma_max_rad=(gamma_max_damage_rad if DAMAGE_ACTIVE else np.deg2rad(30.0)),
+    terminal_vz_weight=0.0,
+)
+
+# Crash planner + crash MPC (constructed lazily when needed)
+crash_planner = CrashSitePlanner(N=PLANNER_N, no_land_ellipses=NO_LAND_ELLIPSES)
+crash_mpc = None
+crash_mode = False
+crash_trigger_step = None
+
+
 # --------------------------------------------------------------
 # Logging buffers (for plotting / analysis)
 # --------------------------------------------------------------
@@ -84,25 +121,6 @@ replan_times = []          # timestamps (seconds)
 replan_counts = 0
 t_step = 0                # 1 step = 1 second if mpc_dt=1
 
-DAMAGE_TIME_S = 60
-damage_applied = False
-crash_mode = False
-no_land_zones = [
-    # directly below aircraft (prevents immediate spiral-down landing)
-    {"cx": -1016.778, "cy": -2892.074, "a": 1000.0, "b": 1000.0},
-
-    # additional example zones
-    {"cx": 1179.912, "cy": -2383.267, "a": 600.0, "b": 600.0},
-    {"cx":  500.0, "cy": -1000.0, "a": 500.0, "b": 500.0},
-    {"cx":  800.0, "cy": -1500.0, "a": 1000.0, "b": 1000.0},
-]
-crash_flags = []
-aircraft.no_land_zones = no_land_zones
-
-# store the nominal plan right before damage for overlay
-nominal_plan_snapshot = None
-
-
 # Initialize logs
 x_sim_m = [float(aircraft.pos_north)]
 y_sim_m = [float(aircraft.pos_east)]
@@ -120,83 +138,75 @@ x_mpc, y_mpc, h_mpc = [], [], []
 
 # Run until we reach ground level
 while h_sim_m[-1] > 0.1:
-    if (not damage_applied) and (t_step >= DAMAGE_TIME_S):
-        gamma_max_deg=-5.0
-        aircraft.apply_damage(gamma_max_deg, gamma_min_deg=-30.0)
-        print(f"[Damage] Activating damage at t={t_step}s: gamma_max={gamma_max_deg}")
-        damage_applied = True
 
-        # Force an immediate replan under the new envelope
-        replan = True
-        cached_waypoints = None
 
-        # Optional: snapshot last planned path for overlay
-        if len(x_planned) > 0:
-            nominal_plan_snapshot = (x_planned[-1].copy(), y_planned[-1].copy(), h_planned[-1].copy())
-
-    mpc = crash_mpc if crash_mode else guidance_mpc
-    #u0, X_pred, U_pred, _, replan = mpc.solve_for_control_input(...)
-
-    # 1) Build flight path reference for MPC (replan only when requested)
+    # 1) Build / refresh the global waypoint polyline (replan only when requested)
     if replan or cached_waypoints is None:
-        Xref_abs, cached_waypoints = mpc.build_local_reference(
-            aircraft, waypoints=None
-        )
-        mpc.reset_replan_memory()
+        if crash_mode:
+            cached_waypoints = crash_planner.solve_for_waypoints(
+                aircraft,
+                gamma_max_rad=gamma_max_damage_rad,
+                verbose=False,
+            )
+        else:
+            cached_waypoints = planner.solve_for_waypoints(aircraft, verbose=False)
+
+        # Reset replan memory for whichever controller is active
+        (crash_mpc if crash_mode else guidance_mpc).reset_replan_memory()
         replan_counts += 1
         replan = False
-    else:
-        Xref_abs, _ = mpc.build_local_reference(
-            aircraft, waypoints=cached_waypoints
-        )
-    # --- after you compute cached_waypoints (i.e., after build_local_reference) ---
-    if damage_applied and (not crash_mode) and (cached_waypoints is not None):
-        # Remaining distance along planned polyline (from current projected position)
-        p = np.array([aircraft.pos_north, aircraft.pos_east, aircraft.altitude], dtype=float)
 
-        # Use the SAME projection routine the MPC uses (consistent geometry)
-        s0, _, _ = mpc._project_to_polyline_s(p, cached_waypoints, use_altitude=False)
+    # 1b) Build local MPC reference along the (possibly cached) polyline
+    Xref_abs, _ = (crash_mpc if crash_mode else guidance_mpc).build_local_reference(
+        aircraft, waypoints=cached_waypoints
+    )
+    # 2) Reachability check (only when damaged and not already in crash mode)
+    #    - Estimate planned ground-track distance to runway from the current cached waypoints
+    #    - Estimate conservative maximum reachable ground range under gamma_max_damage_rad
+    if DAMAGE_ACTIVE and (not crash_mode):
+        planned_len_m = polyline_length(cached_waypoints, use_altitude=False)
+        reachable_m = max_reachable_ground_range(aircraft.altitude, gamma_max_damage_rad, safety_factor=0.90)
 
-        L_path = planner.remaining_length_to_threshold_xy(cached_waypoints, s0)
-        R_max = planner.max_horizontal_range(aircraft.altitude, aircraft.gamma_max_rad)
-
-        if L_path > R_max:
-            print(f"[Damage] Cannot reach runway under gamma_max={np.rad2deg(aircraft.gamma_max_rad):.1f}deg. "
-                f"path={L_path:.0f}m > range={R_max:.0f}m -> switching to CRASH MPC.")
+        if planned_len_m > reachable_m:
             crash_mode = True
-            replan = True
-            cached_waypoints = None
-            continue
+            crash_trigger_step = sim_step
+            print(
+                f"[CRASH MPC] ⚠️  Triggered at step {sim_step}: planned_len={planned_len_m:.1f} m > reachable={reachable_m:.1f} m "
+                f"(h={aircraft.altitude:.1f} m, gamma_max={DAMAGE_GAMMA_MAX_DEG:.2f} deg)"
+            )
 
-    if replan_counts >= 20 and (not crash_mode):
-        print("[Guidance] Too many replans -> switching to CRASH MPC.")
-        crash_mode = True
-        replan = True
-        cached_waypoints = None
-        replan_counts = 0
-        continue
+            # Re-plan to a crash touchdown point (outside forbidden ellipses)
+            cached_waypoints = crash_planner.solve_for_waypoints(
+                aircraft,
+                gamma_max_rad=gamma_max_damage_rad,
+                verbose=True,
+            )
 
-    if replan_counts >= 20 and crash_mode:
-        print("[Crash] Too many replans in crash mode -> terminating sim.")
-        break
+            # Build a dedicated crash MPC instance with a terminal vertical-speed objective
+            crash_mpc = GuidanceMPC(
+                crash_planner,  # any planner-like object with solve_for_waypoints()
+                aircraft,
+                MPC_N,
+                MPC_DT,
+                gamma_min_rad=np.deg2rad(-30.0),
+                gamma_max_rad=gamma_max_damage_rad,
+                terminal_vz_weight=200.0,  # tune
+            )
+            crash_mpc.reset_replan_memory()
+            replan = False
 
-
-
-    # 2b) Else, solve nominal MPC for control input
-    try:
-        u0, X_pred, U_pred, _, replan = mpc.solve_for_control_input(
-            aircraft, cached_waypoints, Xref_abs
-        )
-    except RuntimeError:
-        print("MPC failed")
-        break
+        try:
+            u0, X_pred, U_pred, _, replan = (crash_mpc if crash_mode else guidance_mpc).solve_for_control_input(
+                aircraft, cached_waypoints, Xref_abs
+            )
+        except RuntimeError:
+            print("MPC failed")
+            break
 
     # 3) Log replan flag (this step)
     replan_flags.append(bool(replan))
     replan_times.append(t_step)
-    crash_flags.append(bool(crash_mode))
     t_step += 1
-
 
     # 4) Log applied control inputs
     u_thrust_mpc_m_s2.append(float(u0[0]))
@@ -248,9 +258,10 @@ plot_report_figures(
 # Play Simulation Results
 # --------------------------------------------------------------
 plt.ion()
+replay_step = 0
 
-for replay_step in range(len(x_planned)):
-    zones_to_draw = no_land_zones if crash_flags[replay_step] else None
+while True:
+
     animate_results(
         replay_step,
         x_planned[replay_step],
@@ -266,7 +277,6 @@ for replay_step in range(len(x_planned)):
         vel_ms=vel_sim_ms[replay_step],
         heading_deg=heading_sim_deg[replay_step],
         climb_angle_deg=climb_angle_sim_deg[replay_step],
-        no_land_zones=zones_to_draw,
     )
 
     if replay_step == 0:
@@ -278,5 +288,3 @@ for replay_step in range(len(x_planned)):
         replay_step = 0
 
     plt.pause(0.1)
-plt.ioff()
-plt.show(block=False)

@@ -20,20 +20,20 @@ class AircraftModel:
         self.chi = np.deg2rad(heading_deg)          # Heading angle(rad)
         self.gamma = np.deg2rad(climb_angle_deg)    # Flight path (climb) angle (rad)
 
-        # --- Damage / envelope limits (defaults = nominal) ---
-        self.is_damaged = False
-        self.no_land_zones = []  # List of no-land zones (dictionaries with keys: cx, cy, a, b)
-        # Gamma bounds used by both the plant clamp and MPC parameterization
-        self.gamma_min_rad = np.deg2rad(-30.0)
-        self.gamma_max_rad = np.deg2rad( 30.0)
-
-
         self.glide_speed_ms = BEST_GLIDE_SPEED_KT * 0.514444               # Best glide speed (m/s) converted from knots
         self.stall_speed_ms = STALL_SPEED_KT * 0.514444                    # Stall speed (m/s) converted from knots
         self.never_exceed_speed_ms = NEVER_EXCEED_SPEED_KT * 0.514444      # Never exceed speed (m/s) converted from knots
         self.approach_speed_ms = APPROACH_SPEED_KT * 0.514444              # Approach speed (m/s) converted from knots
         self.dt = dt
 
+        # --------------------------------------------------------------
+        # Damage model (simple pitch / flight-path angle authority loss)
+        # --------------------------------------------------------------
+        # If damage is active, enforce an upper bound on gamma (flight-path angle).
+        # Example: gamma_max_damage_deg = -3.0 means the aircraft cannot fly level/climb;
+        # it must maintain gamma <= -3 deg (i.e., continuous descent).
+        self.damage_active = False
+        self.gamma_max_damage_rad = None  # when active, a scalar (rad)
         self._update_linearized_kinematics()
 
     def get_state_vector(self):
@@ -52,7 +52,30 @@ class AircraftModel:
 
         self._update_linearized_kinematics()
 
+    def set_damage(self, active: bool, gamma_max_damage_deg: float = -3.0):
+        """Enable/disable damage.
+
+        Parameters
+        ----------
+        active:
+            If True, apply a hard upper bound on gamma each integration step.
+        gamma_max_damage_deg:
+            Upper bound for gamma (deg). Should be <= 0 for 'cannot sustain flight'.
+        """
+        self.damage_active = bool(active)
+        if self.damage_active:
+            self.gamma_max_damage_rad = np.deg2rad(float(gamma_max_damage_deg))
+        else:
+            self.gamma_max_damage_rad = None
+
+    def gamma_upper_bound(self):
+        """Return the current gamma upper bound (rad), accounting for damage."""
+        if self.damage_active and (self.gamma_max_damage_rad is not None):
+            return float(self.gamma_max_damage_rad)
+        return None
+
     def _update_linearized_kinematics(self):
+
         """ 
         Update the dynamics matricies using linearized kinematics model 
         """
@@ -89,24 +112,6 @@ class AircraftModel:
         self.Ad = np.eye(6) + Ac * dt
         self.Bd = Bc * dt
 
-    def apply_damage(self, gamma_max_deg=-10.0, gamma_min_deg=-30.0):
-        """Activate damage: restrict climb-angle envelope."""
-        self.is_damaged = True
-        self.gamma_max_rad = np.deg2rad(gamma_max_deg)
-        self.gamma_min_rad = np.deg2rad(gamma_min_deg)
-
-        # Clamp current state immediately to avoid instant infeasibility
-        self.gamma = np.clip(self.gamma, self.gamma_min_rad, self.gamma_max_rad)
-        self._update_linearized_kinematics()
-
-    def clear_damage(self):
-        self.is_damaged = False
-        self.gamma_min_rad = np.deg2rad(-30.0)
-        self.gamma_max_rad = np.deg2rad( 30.0)
-        self.gamma = np.clip(self.gamma, self.gamma_min_rad, self.gamma_max_rad)
-        self._update_linearized_kinematics()
-
-
     def step(self, u):
         u_accel, u_chidot, u_gammadot = u
         dt = self.dt
@@ -119,9 +124,8 @@ class AircraftModel:
         self.vel_ms += u_accel * dt
         self.chi    += u_chidot * dt
         self.gamma  += u_gammadot * dt
-        # Enforce envelope (important once damage is active)
-        self.gamma = np.clip(self.gamma, self.gamma_min_rad, self.gamma_max_rad)
 
-        self._update_linearized_kinematics()
-
+        # Damage enforcement: cap gamma from above
+        if self.damage_active and (self.gamma_max_damage_rad is not None):
+            self.gamma = min(self.gamma, self.gamma_max_damage_rad)
         self._update_linearized_kinematics()

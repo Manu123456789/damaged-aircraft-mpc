@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from matplotlib.patches import Polygon
 from matplotlib.gridspec import GridSpec
+from matplotlib.patches import Ellipse
 
 def animate_results(
     current_step,
@@ -11,11 +12,13 @@ def animate_results(
     x_mpc, y_mpc, h_mpc,
     u_thrust, u_heading, u_climb_rate,
     vel_ms, heading_deg, climb_angle_deg,
+    no_land_zones=None,
     glide_angle_deg=3.0,
     runway_length=2000.0,
     runway_width=200.0,
     title_ground="Ground Track (Top-down View)",
     title_alt="Altitude vs Distance From Runway",
+
 ):
     """
     2x2 overview:
@@ -53,7 +56,7 @@ def animate_results(
 
     # --- 1) Project onto runway axis for altitude subplot ---
     heading_rad, dx, dy = _runway_axis(runway_heading_deg)
-
+    
     s_raw = x * dx + y * dy
     s_abs = np.abs(s_raw)
 
@@ -86,6 +89,43 @@ def animate_results(
         ax_h     = fig.add_subplot(gs[0, 1])
         ax_state = fig.add_subplot(gs[1, 0])
         ax_u     = fig.add_subplot(gs[1, 1])
+
+        animate_results._no_land_patches = []
+        # ==========================================================
+        # Helper: update / draw no-land zones (ellipses)
+        # ==========================================================
+        def _update_no_land_zones(zones):
+            # Remove old patches
+            if hasattr(animate_results, "_no_land_patches"):
+                for p in animate_results._no_land_patches:
+                    try:
+                        p.remove()
+                    except Exception:
+                        pass
+            animate_results._no_land_patches = []
+
+            if zones is None:
+                return
+
+            from matplotlib.patches import Ellipse
+            for i, z in enumerate(zones):
+                # NOTE: ax_g uses x = East (y), y = North (x)
+                e = Ellipse(
+                    (z["cy"], z["cx"]),
+                    width=2.0 * z["b"],     # East radius
+                    height=2.0 * z["a"],    # North radius
+                    facecolor="red",
+                    edgecolor="black",
+                    alpha=0.20,
+                    linewidth=1.0,
+                    zorder=1,
+                    label="No-land zone" if i == 0 else "_nolegend_",
+                )
+                ax_g.add_patch(e)
+                animate_results._no_land_patches.append(e)
+        animate_results._update_no_land_zones = _update_no_land_zones
+
+
 
         # Store axes
         animate_results._fig      = fig
@@ -199,7 +239,7 @@ def animate_results(
             zorder=10
         )
         ax_g.add_patch(plane_patch)
-
+        
         animate_results._plane_body  = plane_body
         animate_results._plane_patch = plane_patch
 
@@ -319,6 +359,9 @@ def animate_results(
         ax_h     = animate_results._ax_h
         ax_u     = animate_results._ax_u
         ax_state = animate_results._ax_state
+    # Ensure no-land zones are updated every frame
+    if hasattr(animate_results, "_update_no_land_zones"):
+        animate_results._update_no_land_zones(no_land_zones)
 
 
     # =========================
@@ -554,3 +597,4 @@ def animate_results(
     fig.canvas.flush_events()
 
     return fig, (animate_results._ax_g, animate_results._ax_h, animate_results._ax_u)
+

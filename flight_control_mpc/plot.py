@@ -463,6 +463,8 @@ def plot_report_figures(
             idx = np.where(rf)[0]
             t_replan = idx.astype(float) * float(mpc_dt)
 
+    
+
     # Use the last planned path for a clean reference overlay
     x_ref = np.asarray(x_planned[-1], dtype=float)
     y_ref = np.asarray(y_planned[-1], dtype=float)

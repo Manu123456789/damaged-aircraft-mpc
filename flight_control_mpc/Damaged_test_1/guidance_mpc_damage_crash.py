@@ -47,20 +47,29 @@ du_gamma_max = np.deg2rad(1.0)     # rad/s per step
 # --------------------------------------------------------------
 gamma_max = np.deg2rad(30.0)    # max climb angle (rad)
 gamma_min = np.deg2rad(-30.0)   # min climb angle (rad)
-#gamma_min_p = opti.parameter()
-#gamma_max_p = opti.parameter()
+
 
 class GuidanceMPC:
-    def __init__(self ,path_planner: GlidePathPlanner, aircraft: AircraftModel , mpc_N, mpc_dt, mode="nominal"):
-        self.mode = mode
+    def __init__(
+        self,
+        path_planner: GlidePathPlanner,
+        aircraft: AircraftModel,
+        mpc_N,
+        mpc_dt,
+        gamma_min_rad: float = gamma_min,
+        gamma_max_rad: float = gamma_max,
+        terminal_vz_weight: float = 0.0,
+    ):
         self.N = mpc_N
         self.dt = mpc_dt
         self.path_planner = path_planner
         self.glide_speed_ms = aircraft.glide_speed_ms
         self.approach_speed_ms = aircraft.approach_speed_ms
+        self.gamma_min_rad = float(gamma_min_rad)
+        self.gamma_max_rad = float(gamma_max_rad)
+        self.terminal_vz_weight = float(terminal_vz_weight)
         self._build_mpc_problem(aircraft)
         self.u_prev_value = np.zeros(3, dtype=float)
-
 
         # --- Replan gate memory ---
         self._s0_prev = None
@@ -74,6 +83,13 @@ class GuidanceMPC:
         self.M_STEPS = 3            # consecutive steps
         self.SAT_FRAC = 0.9         # fraction of input bound
 
+
+    def set_gamma_bounds(self, gamma_min_rad: float | None = None, gamma_max_rad: float | None = None):
+        """Update gamma bounds used by the MPC constraints."""
+        if gamma_min_rad is not None:
+            self.gamma_min_rad = float(gamma_min_rad)
+        if gamma_max_rad is not None:
+            self.gamma_max_rad = float(gamma_max_rad)
 
     def solve_for_control_input(self, aircraft: AircraftModel, waypoints, Xref_abs):
         """ 
@@ -106,11 +122,13 @@ class GuidanceMPC:
         opti.set_value(self.Ad,    Ad)
         opti.set_value(self.Bd,    Bd)
         opti.set_value(self.drift, drift)
-        opti.set_value(self.gamma_min_p, float(aircraft.gamma_min_rad))
-        opti.set_value(self.gamma_max_p, float(aircraft.gamma_max_rad))
+
         Xref_rel = Xref_abs - x_bar.reshape(-1, 1)
         opti.set_value(self.Xref, Xref_rel)
         opti.set_value(self.u_prev, self.u_prev_value)
+        opti.set_value(self.gamma_min_p, self.gamma_min_rad)
+        opti.set_value(self.gamma_max_p, self.gamma_max_rad)
+        opti.set_value(self.w_vz_term, self.terminal_vz_weight)
 
         # 5) Solve MPC
         try:
@@ -150,8 +168,7 @@ class GuidanceMPC:
 
         opti = ca.Opti("conic")
         # opti = ca.Opti()
-        gamma_min_p = opti.parameter()
-        gamma_max_p = opti.parameter()
+
         # Extract Aircraft Model parameters
         V_MIN = aircraft.stall_speed_ms
         V_MAX = aircraft.never_exceed_speed_ms
@@ -168,6 +185,13 @@ class GuidanceMPC:
         drift = opti.parameter(nx)               # affine drift
         Xref_rel = opti.parameter(nx, N + 1)     # reference in delta coords
         u_prev = opti.parameter(nu)
+
+        # Damage-aware gamma bounds (set each solve)
+        gamma_min_p = opti.parameter()
+        gamma_max_p = opti.parameter()
+
+        # Optional terminal vertical-speed weight (set each solve)
+        w_vz_term = opti.parameter()
 
         # State cost matrix
         Q = np.diag([
@@ -206,8 +230,6 @@ class GuidanceMPC:
         # State constraints (absolute flight path angle gamma)
         gamma_abs = X[5, :] + x0[5]
         opti.subject_to(opti.bounded(gamma_min_p, gamma_abs, gamma_max_p))
-        self.gamma_min_p = gamma_min_p
-        self.gamma_max_p = gamma_max_p
 
         # Input constraints (absolute)
         opti.subject_to(opti.bounded(u_accel_min,  U[0, :], u_accel_max))
@@ -244,25 +266,17 @@ class GuidanceMPC:
             dgamma = X[5, k+1] - X[5, k]
             J += W_DCHI * dchi**2 + W_DGAMMA * dgamma**2
 
-            if self.mode == "crash":
-                # Penalize vertical speed near the end of horizon
-                v_abs_k = X[3, k] + x0[3]
-                gam_abs_k = X[5, k] + x0[5]
-                #vz_k = v_abs_k * ca.sin(gam_abs_k)
-                vz_proxy = v_abs_k * gam_abs_k
-                #J += w * (vz_proxy**2)
-
-                # weight stronger near terminal
-                w = 0.0
-                if k >= N-2:
-                    w = 200.0  # tune
-                J += w * (vz_proxy**2)
-                #J += w * (vz_k**2)
-
-
         # terminal
         eN = X[:, N] - Xref_rel[:, N]
         J += ca.mtimes([eN.T, Q_CA, eN])
+
+        # Optional crash-landing terminal objective: minimize vertical speed at touchdown.
+        # v_z = v * sin(gamma). Note: with your current input bounds, airspeed is roughly fixed,
+        # so this primarily drives gamma toward 0 (or the least-negative feasible value).
+        vN_abs = X[3, N] + x0[3]
+        gamN_abs = X[5, N] + x0[5]
+        vzN = vN_abs * ca.sin(gamN_abs)
+        J += w_vz_term * (vzN**2)
 
         opti.minimize(J)
 
@@ -286,6 +300,9 @@ class GuidanceMPC:
         self.drift  = drift
         self.Xref   = Xref_rel
         self.u_prev = u_prev
+        self.gamma_min_p = gamma_min_p
+        self.gamma_max_p = gamma_max_p
+        self.w_vz_term = w_vz_term
 
 
     def build_local_reference(self, aircraft: AircraftModel, waypoints=None):
@@ -294,16 +311,9 @@ class GuidanceMPC:
         along the (possibly cached) waypoint polyline, starting from the aircraft's
         current projected along-path location s0 (not necessarily waypoint 0).
         """
+        # 1) Get waypoints (use cached if provided)
         if waypoints is None:
-            if self.mode == "crash":
-                waypoints = self.path_planner.solve_for_crash_waypoints(
-                    aircraft,
-                    gamma_max_rad=aircraft.gamma_max_rad,
-                    no_land_zones=aircraft.no_land_zones,
-                    verbose=False
-                )
-            else:
-                waypoints = self.path_planner.solve_for_waypoints(aircraft, verbose=False)
+            waypoints = self.path_planner.solve_for_waypoints(aircraft, verbose=False)
 
         waypoints = np.asarray(waypoints)
         north_wp = waypoints[:, 0]
@@ -317,51 +327,35 @@ class GuidanceMPC:
 
         # 3) Build desired along-path distances for each MPC step (start at s0)
         T = self.N + 1
-        D_margin = 50.0 if self.mode != "crash" else 0.0
-        s_end = max(float(s_wp[-1]) - D_margin, float(s0))
+        s_ref = np.zeros(T)
 
-        # Nominal (unclipped) progression in arc-length
-        s_nom = float(s0) + float(self.approach_speed_ms) * float(self.dt) * np.arange(T)
+        D_margin = 50.0  # meters before runway threshold
+        s_end = max(s_wp[-1] - D_margin, s0)  # never end behind current projection
 
-        # For interpolation: hard clip to the polyline range
-        s_ref_clip = np.clip(s_nom, float(s0), float(s_end))
+        for k in range(T):
+            s_k = s0 + self.approach_speed_ms * self.dt * k
 
-        # For gradients: make a strictly-increasing copy (allow tiny epsilon past s_end if needed)
-        s_ref_grad = s_ref_clip.copy()
-        eps = 1e-3  # meters
-        for k in range(1, T):
-            if s_ref_grad[k] <= s_ref_grad[k-1]:
-                s_ref_grad[k] = s_ref_grad[k-1] + eps
+            s_ref[k] = np.clip(s_k, s0, s_end)
 
-        # 4) Interpolate references using the CLIPPED s_ref
-        north_ref = np.interp(s_ref_clip, s_wp, north_wp)
-        east_ref  = np.interp(s_ref_clip, s_wp, east_wp)
-        alt_ref   = np.interp(s_ref_clip, s_wp, alt_wp)
-        v_ref     = np.full(T, float(self.approach_speed_ms))
+        # 4) Interpolate references
+        north_ref = np.interp(s_ref, s_wp, north_wp)
+        east_ref  = np.interp(s_ref, s_wp, east_wp)
+        alt_ref   = np.interp(s_ref, s_wp, alt_wp)
+        v_ref     = np.full(T, self.approach_speed_ms)
 
-        # 5) Angular references (robust)
-        # If we are effectively "stuck" at the end, gradients are meaningless -> hold angles constant
-        if np.unique(s_ref_clip).size < 3:
-            chi_ref   = np.full(T, float(aircraft.chi), dtype=float)
-            gamma_ref = np.full(T, float(aircraft.gamma), dtype=float)
-        else:
-            if np.unique(s_ref_clip).size < T:
-                print(f"[Ref] s_ref_clip has repeats: unique={np.unique(s_ref_clip).size}/{T}, s_end={s_end:.2f}")
+        # 5) Angular references: keep current (your original choice)
+        # --- Derivatives wrt along-path distance s (not index) ---
+        dN_ds = np.gradient(north_ref, s_ref, edge_order=1)
+        dE_ds = np.gradient(east_ref,  s_ref, edge_order=1)
+        dh_ds = np.gradient(alt_ref,   s_ref, edge_order=1)
 
-            dN_ds = np.gradient(north_ref, s_ref_grad, edge_order=1)
-            dE_ds = np.gradient(east_ref,  s_ref_grad, edge_order=1)
-            dh_ds = np.gradient(alt_ref,   s_ref_grad, edge_order=1)
+        # Heading from horizontal tangent
+        chi_ref = np.unwrap(np.arctan2(dE_ds, dN_ds))
+        for k in range(1, len(chi_ref)):
+            chi_ref[k] = 0.2*chi_ref[k] + 0.8*chi_ref[k-1]   # tune 0.2
 
-            chi_ref = np.unwrap(np.arctan2(dE_ds, dN_ds))
-            for k in range(1, T):
-                chi_ref[k] = 0.2 * chi_ref[k] + 0.8 * chi_ref[k-1]
-
-            gamma_ref = np.arctan(dh_ds)
-
-        # Final safety: no NaNs allowed into the MPC
-        if (not np.all(np.isfinite(chi_ref))) or (not np.all(np.isfinite(gamma_ref))):
-            chi_ref   = np.full(T, float(aircraft.chi), dtype=float)
-            gamma_ref = np.full(T, float(aircraft.gamma), dtype=float)
+        # Flight-path angle from vertical slope vs horizontal distance
+        gamma_ref = np.arctan(dh_ds)   # equivalent to atan2(dh_ds, 1)
 
         # 6) Assemble Xref_abs (nx x T)
         Xref_abs = np.vstack([
@@ -412,34 +406,19 @@ class GuidanceMPC:
         return best_s0, s_wp, e_perp
     
     def _should_replan(self, aircraft: AircraftModel, waypoints: np.ndarray, u0: np.ndarray):
-        # Never replan very close to ground / endgame
-        d_xy = float(np.hypot(aircraft.pos_north, aircraft.pos_east))
-        if aircraft.altitude < 15.0 or d_xy < 200.0:
-            return False
-
-        if waypoints is None:
-            return True
-
-        wp = np.asarray(waypoints)
-        if wp.ndim != 2 or wp.shape[0] < 2 or wp.shape[1] < 2:
-            return True
-
         # Project current position onto path
         p = np.array([aircraft.pos_north, aircraft.pos_east, aircraft.altitude], dtype=float)
         s0, _, e_perp = self._project_to_polyline_s(p, waypoints, use_altitude=False)
 
-        # In crash mode: ONLY replan on large cross-track error (or not at all)
-        if self.mode == "crash":
-            # Allow larger tolerance in crash mode to avoid oscillatory replans
-            return e_perp > (2.0 * self.EPERP_MAX)  # e.g. 200m if EPERP_MAX=100m
-
-        # --- nominal mode (keep your old logic) ---
+        # --- Cross-track error ---
         if e_perp > self.EPERP_MAX:
             self._eperp_count += 1
         else:
             self._eperp_count = 0
 
+        # --- Progress stall ---
         if self._s0_prev is None:
+            ds = np.inf
             self._stall_count = 0
         else:
             ds = s0 - self._s0_prev
@@ -450,11 +429,13 @@ class GuidanceMPC:
 
         self._s0_prev = s0
 
-        return (self._eperp_count >= self.M_STEPS or self._stall_count >= self.M_STEPS)
-
+        # --- Final decision ---
+        return (
+            self._eperp_count >= self.M_STEPS or
+            self._stall_count >= self.M_STEPS
+        )
     
     def reset_replan_memory(self):
         self._s0_prev = None
         self._eperp_count = 0
         self._stall_count = 0
-        self._sat_count = 0
