@@ -21,7 +21,7 @@ The core idea is a **two-layer guidance stack**:
 Unlike “replan every step” architectures, the planner **only replans when the MPC declares the current plan infeasible**.
 
 <p align="center">
-  <img src="media/guidance_stack.png" alt="Two-layer guidance architecture" width="700">
+  <img src="media/guidance_stack.png" alt="Two-layer guidance architecture" width="800">
 </p>
 
 ---
@@ -30,40 +30,47 @@ Unlike “replan every step” architectures, the planner **only replans when th
 
 ### 3D Kinematic Point-Mass Model (Guidance Level)
 
+
 State:
-\[
+$$
 x = [x,\ y,\ h,\ V,\ \chi,\ \gamma]^T
-\]
+$$
 
-- \(x,y\): North/East position (m)  
-- \(h\): altitude (m)  
-- \(V\): airspeed (m/s)  
-- \(\chi\): heading (rad)  
-- \(\gamma\): flight-path / climb angle (rad)
+Where:
+| State     | Meaning                                | Units   |
+|-----------|----------------------------------------|---------|
+| $x$       | North position in world frame          | meters  |
+| $y$       | East position in world frame           | meters  |
+| $h$       | Altitude                               | meters  |
+| $V$       | Airspeed magnitude                     | m/s     |
+| $\chi$    | Heading angle (0° = North, 90° = East) | radians |
+| $\gamma$  | Climb angle                            | radians |
 
-Dynamics:
-\[
+Kinematics:
+$$
 \dot{x} = V\cos\gamma\cos\chi,\qquad
 \dot{y} = V\cos\gamma\sin\chi,\qquad
 \dot{h} = V\sin\gamma
-\]
-\[
+$$
+$$
 \dot{V} = u_{accel},\qquad
 \dot{\chi} = u_{\dot{\chi}},\qquad
 \dot{\gamma} = u_{\dot{\gamma}}
-\]
+$$
 
 Inputs (tracked by ideal autopilot):
+$$
 - \(u_{accel}\): longitudinal acceleration command (m/s²)
 - \(u_{\dot{\chi}}\): heading-rate command (rad/s)
 - \(u_{\dot{\gamma}}\): climb-angle-rate command (rad/s)
+$$
 
 ### Linearization for MPC (LTV)
 
 At each control iteration, the nonlinear kinematics are linearized about the current operating point and discretized (e.g., forward Euler) to form an LTV prediction model:
-\[
+$$
 x_{k+1} = A_d x_k + B_d u_k
-\]
+$$
 
 ---
 
@@ -71,7 +78,7 @@ x_{k+1} = A_d x_k + B_d u_k
 
 ### Long-Horizon Geometric Planner (Convex QP)
 
-Produces a waypoint sequence \((x_i, y_i, h_i)\) from current aircraft position to runway threshold.
+Produces a waypoint sequence $$((x_i, y_i, h_i))$$ from current aircraft position to runway threshold.
 
 Typical objective terms:
 - Smoothness (second differences)
@@ -120,7 +127,7 @@ If (after damage) runway landing is declared infeasible, the system switches to 
    Tracks the crash polyline using the same convex QP structure, with an added terminal/near-ground penalty encouraging reduced vertical impact severity.
 
 <p align="center">
-  <img src="media/damage_reroute.gif" alt="Damaged-aircraft guidance demo" width="700">
+  <img src="media/damage_reroute.gif" alt="Damaged-aircraft guidance demo" width="800">
 </p>
 
 ---
