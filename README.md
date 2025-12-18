@@ -96,8 +96,6 @@ $$
 
 ### Long-Horizon Geometric Planner (Convex QP)
 
-Produces a waypoint sequence $(x_i, y_i, h_i)$ from current aircraft position to the runway threshold.
-
 The planner solves a convex QP over the stacked waypoint decision vector:
 
 $$
