@@ -1,113 +1,134 @@
 # Damaged Aircraft MPC Guidance Controller
-This project explores how **Model Predictive Control (MPC)** can provide **high-level guidance** to a **damaged aircraft** using only a **3D kinematic model**.  
 
-Developed as the final project for **UC Berkeley MECENG 231A – Model Predictive Control**
+This project explores how **Model Predictive Control (MPC)** can provide **high-level guidance** to a **damaged aircraft** using only a **3D kinematic model**.
 
-## 🛫 Introduction
-The controller outputs *guidance commands* (desired acceleration, turn rate, and climb-angle rate), which are assumed to be tracked by an **ideal lower-level autopilot**.
-
-The central idea is to combine:
-
-- a **long-horizon glide-path planner**, and  
-- a **short-horizon receding-horizon MPC**
-
-to guide an impaired aircraft toward a safe landing runway, even when control authority is degraded.
+Developed as the final project for **UC Berkeley MECENG 231A – Model Predictive Control**.
 
 ---
 
-## ✈️ Model
-### Kinematic Model
+## Overview
 
-The aircraft is modeled as a **3D point-mass kinematic system** with six states:
+The controller outputs *guidance commands* (desired longitudinal acceleration, turn-rate, and climb-angle rate), which are assumed to be tracked by an **ideal lower-level autopilot**.
 
-$$
-x = [x,\ y,\ h,\ V,\ \chi,\ \gamma\]
-$$
+The core idea is a **two-layer guidance stack**:
 
-Where:
-| State     | Meaning                                | Units   |
-|-----------|----------------------------------------|---------|
-| $x$       | North position in world frame          | meters  |
-| $y$       | East position in world frame           | meters  |
-| $h$       | Altitude                               | meters  |
-| $V$       | Airspeed magnitude                     | m/s     |
-| $\chi$    | Heading angle (0° = North, 90° = East) | radians |
-| $\gamma$  | Climb angle                            | radians |
+1) **Long-horizon geometric planner (convex QP)**  
+   Generates a smooth, runway-aligned 3D waypoint reference to the runway threshold.
 
-The kinematic equations of motion are:
+2) **Short-horizon guidance MPC (convex QP, LTV)**  
+   Tracks a local segment of the reference while enforcing constraints and handling degraded authority.
 
-$$
+Unlike “replan every step” architectures, the planner **only replans when the MPC declares the current plan infeasible**.
+
+<p align="center">
+  <img src="media/guidance_stack.png" alt="Two-layer guidance architecture" width="700">
+</p>
+
+---
+
+## Model
+
+### 3D Kinematic Point-Mass Model (Guidance Level)
+
+State:
+\[
+x = [x,\ y,\ h,\ V,\ \chi,\ \gamma]^T
+\]
+
+- \(x,y\): North/East position (m)  
+- \(h\): altitude (m)  
+- \(V\): airspeed (m/s)  
+- \(\chi\): heading (rad)  
+- \(\gamma\): flight-path / climb angle (rad)
+
+Dynamics:
+\[
 \dot{x} = V\cos\gamma\cos\chi,\qquad
 \dot{y} = V\cos\gamma\sin\chi,\qquad
 \dot{h} = V\sin\gamma
-$$
-
-The speed, heading, and climb angle evolve according to **high-level guidance inputs**:
-
-$$
+\]
+\[
 \dot{V} = u_{accel},\qquad
 \dot{\chi} = u_{\dot{\chi}},\qquad
 \dot{\gamma} = u_{\dot{\gamma}}
-$$
+\]
 
-Where:
-- $u_{accel}$ — commanded longitudinal acceleration  
-- $u_{\dot{\chi}}$ — commanded heading rate  
-- $u_{\dot{\gamma}}$ — commanded climb-angle rate  
+Inputs (tracked by ideal autopilot):
+- \(u_{accel}\): longitudinal acceleration command (m/s²)
+- \(u_{\dot{\chi}}\): heading-rate command (rad/s)
+- \(u_{\dot{\gamma}}\): climb-angle-rate command (rad/s)
 
-These inputs are assumed to be tracked by an **ideal inner-loop autopilot**, allowing the MPC to operate purely at the guidance level.
+### Linearization for MPC (LTV)
 
-### Linearization for MPC
-
-Although the aircraft obeys nonlinear kinematic equations,  
-the MPC uses a **linearized model** that is recomputed at each control iteration.
-
-At each step, the Jacobians of the nonlinear dynamics are evaluated around the current
-state, producing an LTV (Linear Time-Varying) system:
-
-$$
-A_k = \frac{\partial f}{\partial x}\Big\rvert_{x_k}, \qquad 
-B_k = \frac{\partial f}{\partial u}\Big\rvert_{x_k},
-$$
-
-which is discretized as:
-
-$$
-A_d = I + A_k\Delta t, \qquad B_d = B_k\Delta t.
-$$
-
-This yields the linear prediction model used inside the MPC:
-
-$$
+At each control iteration, the nonlinear kinematics are linearized about the current operating point and discretized (e.g., forward Euler) to form an LTV prediction model:
+\[
 x_{k+1} = A_d x_k + B_d u_k
-$$
-
-This simplification allows us to study **navigation** and **trajectory planning** without modeling aerodynamics, control surfaces, or aircraft attitude.
+\]
 
 ---
 
-## 🧭 Guidance Architecture
-### Long-Horizon Planner
-- Fully **convex**
-- Optimization-based geometry only trajectory planner
-- Generates a smooth runway-aligned 3D trajectory
-- Horizon extends all the way to touchdown
-- Produces a full-descent reference path
-- Only replan when Short-Horizon MPC deemed the planned path is infeasible to track
+## Guidance Architecture
 
-### Short-Horizon MPC
-- Fully **convex**
-- Linear time-varying (LTV) MPC
-- Tracks the planned path over a short window
-- Handles degraded control authority:
-  - Limited acceleration
-  - Limited turn rate
-  - Limited climb/descent rate
-- Determines if the path is infeasible to follow
-- Outputs high-level rate commands:
+### Long-Horizon Geometric Planner (Convex QP)
 
-$$
-\dot{V},\quad
-\dot{\chi},\quad
-\dot{\gamma}
-$$
+Produces a waypoint sequence \((x_i, y_i, h_i)\) from current aircraft position to runway threshold.
+
+Typical objective terms:
+- Smoothness (second differences)
+- Glide-slope shaping
+- Runway centerline (cross-track) shaping
+- Terminal runway heading alignment
+
+**Replanning policy:** planner is called only when the MPC flags infeasibility.
+
+### Short-Horizon Guidance MPC (Convex QP, LTV)
+
+Tracks a short window of the planned reference while enforcing:
+- **state envelopes** (e.g., speed bounds, \(\gamma\) bounds)
+- **input bounds** (reduced under damage)
+- **input rate bounds** (to prevent aggressive/oscillatory commands)
+
+**Reference construction:** the planner directly provides position/altitude references, and the implementation primarily penalizes tracking error in \((x,y,h,V)\). Reference angles for \((\chi,\gamma)\) are computed from path gradients.
+
+---
+
+## Damage + Mode Switching
+
+### Degraded Control Authority (Damage Mode)
+
+Damage is modeled by **tightening input bounds** (and potentially tightening the allowable \(\gamma\) envelope mid-flight) while keeping the same kinematic model. This can render the original runway plan infeasible.
+
+### Tracking Feasibility → Replan Triggers
+
+During flight, the MPC monitors feasibility using:
+- a **cross-track error accumulation counter**, and
+- a **progress-stall detector** based on insufficient along-path progress.
+
+If triggers persist for several consecutive steps, the current plan is declared infeasible and the planner replans.
+
+### Runway Unreachable → Crash Landing Mode
+
+If (after damage) runway landing is declared infeasible, the system switches to a **secondary reference + MPC structure**:
+
+1) **Online reachability check**  
+   Compare remaining horizontal distance along the planned approach polyline vs. maximum achievable horizontal range computed from altitude and shallowest allowable descent.
+
+2) **Crash touchdown selection with no-land zones (ellipses)**  
+   The long-horizon planner selects a feasible touchdown point within remaining range while avoiding no-land ellipses by scanning bearings about current heading and rejecting candidates that intersect restricted regions. If the aircraft starts inside a no-land ellipse, an intermediate “escape waypoint” is generated just outside the ellipse boundary.
+
+3) **Crash landing MPC**  
+   Tracks the crash polyline using the same convex QP structure, with an added terminal/near-ground penalty encouraging reduced vertical impact severity.
+
+<p align="center">
+  <img src="media/damage_reroute.gif" alt="Damaged-aircraft guidance demo" width="700">
+</p>
+
+---
+
+## Repository Entry Points
+
+- `flight_control_mpc/path_planner.py` — long-horizon planner + crash planner
+- `flight_control_mpc/guidance_mpc.py` — short-horizon MPC + feasibility logic
+- `flight_control_mpc/aircraft_model.py` — nonlinear kinematic model + linearization
+- `flight_control_mpc/test.py` — runnable scenarios / demos
+- `flight_control_mpc/plot.py`, `flight_control_mpc/animation.py` — visualization
