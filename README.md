@@ -36,14 +36,28 @@ $$
 x = [x,\ y,\ h,\ V,\ \chi,\ \gamma]^T
 $$
 
-| State     | Meaning                                | Units   |
-|-----------|----------------------------------------|---------|
-| $x$       | North position in world frame          | meters  |
-| $y$       | East position in world frame           | meters  |
-| $h$       | Altitude                               | meters  |
-| $V$       | Airspeed magnitude                     | m/s     |
-| $\chi$    | Heading angle (0° = North, 90° = East) | radians |
-| $\gamma$  | Climb angle                            | radians |
+<div align="center">
+
+<table>
+  <thead>
+    <tr>
+      <th>State</th>
+      <th>Meaning</th>
+      <th>Units</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td><code>x</code></td><td>North position in world frame</td><td>meters</td></tr>
+    <tr><td><code>y</code></td><td>East position in world frame</td><td>meters</td></tr>
+    <tr><td><code>h</code></td><td>Altitude</td><td>meters</td></tr>
+    <tr><td><code>V</code></td><td>Airspeed magnitude</td><td>m/s</td></tr>
+    <tr><td><code>χ</code></td><td>Heading angle (0° = North, 90° = East)</td><td>radians</td></tr>
+    <tr><td><code>γ</code></td><td>Climb angle</td><td>radians</td></tr>
+  </tbody>
+</table>
+
+</div>
+
 
 Kinematics:
 
@@ -69,7 +83,7 @@ Inputs (tracked by ideal autopilot):
 At each control iteration, the nonlinear kinematics are linearized about the current operating point and discretized (e.g., forward Euler) to form an LTV prediction model:
 
 $$
-\x_{k+1} = A_d x_k + B_d u_k,\qquad
+x_{k+1} = A_d x_k + B_d u_k
 $$
 
 ---
