@@ -5,7 +5,7 @@ from aircraft_model import AircraftModel
 # --------------------------------------------------------------
 # Path Planner Cost Weights
 # --------------------------------------------------------------
-WEIGHT_SMOOTH = 50.0                 # smoothness for x,y
+WEIGHT_SMOOTH = 5000.0                 # smoothness for x,y
 WEIGHT_GS = 10.0                     # glideslope altitude error
 WEIGHT_LAT = 1.0                     # lateral (cross-track) error
 RW_ALIGN_WEIGHT = 1.0            # final runway heading alignment
@@ -369,7 +369,7 @@ if __name__ == "__main__":
     )
 
     N = 50
-    start_pos = (-5000.0, -15000.0, 1500.0)       # (x, y, h) in meters
+    start_pos = (-2000.0, -2000.0, 200.0)       # (x, y, h) in meters
     RUNWAY_HEADING_DEG = 90  # Runway heading in degrees
 
     aircraft = AircraftModel(pos_north=start_pos[0],
